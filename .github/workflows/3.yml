@@ -1,30 +1,48 @@
-name: Recruit Crawler
+name: Run Saramin Crawler
 
 on:
+  workflow_dispatch:      # 사용자가 Actions에서 수동 실행 가능
   schedule:
-    - cron: "0 0 * * *" # 매일 0시(UTC) 실행 → 한국 시간은 오전 9시
-  workflow_dispatch: # 필요 시 수동 실행 버튼도 활성화
+    - cron: "0 0 * * *"   # 매일 한국시간 오전 9시 실행 (UTC+9 → 0시)
 
 jobs:
-  run-crawler:
+  run:
     runs-on: ubuntu-latest
+    permissions:
+      contents: write    # docs 폴더에 HTML 저장 후 커밋하기 위함
+
+    env:
+      EMAIL_SENDER: ${{ secrets.EMAIL_SENDER }}
+      EMAIL_RECEIVER: ${{ secrets.EMAIL_RECEIVER }}
+      EMAIL_APP_PASSWORD: ${{ secrets.EMAIL_APP_PASSWORD }}
 
     steps:
-      - name: Checkout code
-        uses: actions/checkout@v3
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0   # 전체 기록 가져오기 (덮어쓰기에 필요)
 
       - name: Set up Python
-        uses: actions/setup-python@v4
+        uses: actions/setup-python@v5
         with:
           python-version: "3.10"
 
       - name: Install dependencies
         run: |
-          pip install requests beautifulsoup4 pandas
+          pip install --upgrade pip
+          pip install requests beautifulsoup4 pandas google-auth google-auth-oauthlib google-api-python-client
 
-      - name: Run crawler
-        env:
-          EMAIL_SENDER: ${{ secrets.EMAIL_SENDER }}
-          EMAIL_RECEIVER: ${{ secrets.EMAIL_RECEIVER }}
-          EMAIL_APP_PASSWORD: ${{ secrets.EMAIL_APP_PASSWORD }}
-        run: python test.py
+      - name: Run Saramin Crawler
+        run: python test.py   # 파일 이름이 다르면 수정해주세요
+
+      - name: Commit and Push HTML & CSV
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add docs/*.html *.csv || true
+          if git diff --cached --quiet; then
+            echo "변경된 파일 없음. 커밋 건너뜀."
+          else
+            git commit -m "🔄 Auto update saramin_results_latest.html & CSV ($(date -u +'%Y-%m-%dT%H:%M:%SZ'))"
+            git push origin main
+          fi
