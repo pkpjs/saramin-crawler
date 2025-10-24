@@ -239,10 +239,12 @@ a {{ text-decoration:none; color:#3498db; }}
         if csv_path and os.path.exists(csv_path):
             with open(csv_path, 'rb') as f:
                 part = MIMEApplication(f.read(), _subtype='csv')
-                part.add_header('Content-Disposition',
-                                filename=os.path.basename(csv_path))
+                part.add_header(
+                    'Content-Disposition',
+                    'attachment',        # ✅ 필수 _value 추가됨
+                    filename=os.path.basename(csv_path)
+                )
                 msg.attach(part)
-
         try:
             server = smtplib.SMTP('smtp.gmail.com', 587)
             server.starttls()
