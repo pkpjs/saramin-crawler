@@ -1,15 +1,15 @@
 name: Run Saramin Crawler
 
 on:
-  workflow_dispatch:      # 사용자가 Actions에서 수동 실행 가능
+  workflow_dispatch:
   schedule:
-    - cron: "0 0 * * *"   # 매일 한국시간 오전 9시 실행 (UTC+9 → 0시)
+    - cron: "0 0 * * *"  # 한국시간 오전 9시 자동 실행 (UTC 0시 기준)
 
 jobs:
   run:
     runs-on: ubuntu-latest
     permissions:
-      contents: write    # docs 폴더에 HTML 저장 후 커밋하기 위함
+      contents: write   # docs 폴더에 HTML 저장 후 커밋하기 위함
 
     env:
       EMAIL_SENDER: ${{ secrets.EMAIL_SENDER }}
@@ -20,7 +20,8 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
         with:
-          fetch-depth: 0   # 전체 기록 가져오기 (덮어쓰기에 필요)
+          fetch-depth: 0
+          persist-credentials: true   # ✅ Git push 가능하도록 설정
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -33,16 +34,22 @@ jobs:
           pip install requests beautifulsoup4 pandas google-auth google-auth-oauthlib google-api-python-client
 
       - name: Run Saramin Crawler
-        run: python test.py   # 파일 이름이 다르면 수정해주세요
+        run: python test.py   # ← 파일명 확인 후 수정 필요
 
       - name: Commit and Push HTML & CSV
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
+
+          echo "✅ Pulling latest changes with rebase..."
+          git pull origin main --rebase || true
+
           git add docs/*.html *.csv || true
+
           if git diff --cached --quiet; then
-            echo "변경된 파일 없음. 커밋 건너뜀."
+            echo "✅ No changes detected. Skipping commit."
           else
             git commit -m "🔄 Auto update saramin_results_latest.html & CSV ($(date -u +'%Y-%m-%dT%H:%M:%SZ'))"
             git push origin main
+            echo "✅ Successfully pushed changes."
           fi
