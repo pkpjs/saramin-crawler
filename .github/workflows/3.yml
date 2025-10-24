@@ -1,49 +1,30 @@
-name: Crawl Saramin and Publish
+name: Recruit Crawler
 
 on:
-  workflow_dispatch:
   schedule:
-    - cron: "0 0 * * *"   # UTC 00:00 = KST 09:00
+    - cron: "0 0 * * *" # 매일 0시(UTC) 실행 → 한국 시간은 오전 9시
+  workflow_dispatch: # 필요 시 수동 실행 버튼도 활성화
 
 jobs:
   run-crawler:
     runs-on: ubuntu-latest
-    permissions:
-      contents: write   # docs 커밋/푸시에 필요
-
-    env:
-      EMAIL_SENDER: ${{ secrets.EMAIL_SENDER }}
-      EMAIL_RECEIVER: ${{ secrets.EMAIL_RECEIVER }}
-      EMAIL_APP_PASSWORD: ${{ secrets.EMAIL_APP_PASSWORD }}
 
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
+      - name: Checkout code
+        uses: actions/checkout@v3
 
-      - name: Setup Python
-        uses: actions/setup-python@v5
+      - name: Set up Python
+        uses: actions/setup-python@v4
         with:
           python-version: "3.10"
 
-      - name: Install deps
+      - name: Install dependencies
         run: |
-          pip install --upgrade pip
           pip install requests beautifulsoup4 pandas
 
-      - name: Run crawler (generate CSV + HTML)
-        run: |
-          python main.py  # 파일명이 다른 경우 여기를 맞춰주세요
-
-      - name: Commit and push docs (HTML)
-        run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add docs/*.html *.csv || true
-          if ! git diff --cached --quiet; then
-            git commit -m "chore: publish HTML & CSV $(date -u +'%Y-%m-%dT%H:%M:%SZ')"
-            git push origin main
-          else
-            echo "No changes to commit."
-          fi
+      - name: Run crawler
+        env:
+          EMAIL_SENDER: ${{ secrets.EMAIL_SENDER }}
+          EMAIL_RECEIVER: ${{ secrets.EMAIL_RECEIVER }}
+          EMAIL_APP_PASSWORD: ${{ secrets.EMAIL_APP_PASSWORD }}
+        run: python test.py
