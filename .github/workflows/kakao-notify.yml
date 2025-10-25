@@ -5,9 +5,9 @@ on:
     # 매일 오전 9시 KST == 00:00 UTC
     - cron: "0 0 * * *"
   workflow_dispatch:
-  # (선택) 크롤링 워크플로 끝난 직후 자동 발송 - 워크플로 이름 맞춰주세요
+  # ✅ Saramin 크롤러 완료 직후 자동 실행
   workflow_run:
-    workflows: ["Saramin Crawl", "Saramin Crawler"]
+    workflows: ["Run Saramin Crawler"]   # ✅ 정확한 워크플로 이름
     types:
       - completed
 
@@ -34,7 +34,6 @@ jobs:
           KAKAO_REDIRECT_URI: ${{ secrets.KAKAO_REDIRECT_URI }}
           KAKAO_REFRESH_TOKEN: ${{ secrets.KAKAO_REFRESH_TOKEN }}
           KAKAO_ACCESS_TOKEN: ${{ secrets.KAKAO_ACCESS_TOKEN }}
-          # GitHub Pages 결과 링크
           PAGES_URL: "https://pkpjs.github.io/test/saramin_results_latest.html"
         run: |
           python send_kakao.py
