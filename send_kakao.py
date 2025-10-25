@@ -1,5 +1,7 @@
 # -*- coding: utf-8 -*-
-import os, json, requests
+import os
+import json
+import requests
 from bs4 import BeautifulSoup
 from urllib.parse import urljoin
 from datetime import datetime, timedelta, timezone
@@ -38,7 +40,6 @@ def load_html_text() -> str:
 def extract_top10():
     html = load_html_text()
     soup = BeautifulSoup(html, "lxml")
-
     table = soup.find("table")
     if not table:
         return [], 0
@@ -90,62 +91,56 @@ def extract_top10():
         location = tds[i_loc].get_text(strip=True) if i_loc is not None and i_loc < len(tds) else ""
         job = tds[i_job].get_text(strip=True) if i_job is not None and i_job < len(tds) else ""
 
-        desc = " | ".join([t for t in [location, job] if t])
-        if not url:
-            url = PAGES_URL
+        desc = location
+        full_url = url or PAGES_URL
 
         items.append({
             "title": title or "(제목 없음)",
-            "desc": desc or company,
-            "url": url
+            "company": company,
+            "desc": desc,
+            "url": full_url
         })
 
     return items[:10], total
 
-def send_feed_card(access_token: str, title: str, desc: str, link_url: str):
+def build_text_message(items):
+    lines = []
+    for i, item in enumerate(items, start=1):
+        lines.append(f"{i}위 | {item['title']}")
+        if item['company']:
+            lines.append(item['company'])
+        if item['desc']:
+            lines.append(item['desc'])
+        lines.append(f"🔗 {item['url']}")
+        lines.append("")  # 빈 줄로 구분
+
+    lines.append("👇 전체 공고 보기:")
+    lines.append(PAGES_URL)
+    return "\n".join(lines)
+
+def send_kakao_text(access_token, text):
     url = "https://kapi.kakao.com/v2/api/talk/memo/default/send"
     template_object = {
-        "object_type": "feed",
-        "content": {
-            "title": title,
-            "description": desc,
-            "link": {"web_url": link_url, "mobile_web_url": link_url},
-        },
-        "buttons": [
-            {
-                "title": "상세보기",
-                "link": {"web_url": link_url, "mobile_web_url": link_url}
-            }
-        ]
+        "object_type": "text",
+        "text": text,
+        "link": {"web_url": PAGES_URL, "mobile_web_url": PAGES_URL},
+        "button_title": "전체 공고 보기"
     }
-
     headers = {"Authorization": f"Bearer {access_token}"}
     data = {"template_object": json.dumps(template_object, ensure_ascii=False)}
     r = requests.post(url, headers=headers, data=data, timeout=20)
-    res = r.json()
-
-    if res.get("result_code") != 0:
-        raise RuntimeError(f"카드 전송 실패: {res}")
-    return res
+    return r.json()
 
 def main():
     access_token = refresh_access_token()
     items, total = extract_top10()
-
-    today = datetime.now(KST).strftime("%Y-%m-%d")
-
     if not items:
-        print("❌ 데이터가 없습니다")
+        print("데이터가 없습니다.")
         return
 
-    # 🔥 TOP10 각 항목을 feed 카드로 전송
-    for i, item in enumerate(items, start=1):
-        display_title = f"{i}위 | {item['title']}"
-        display_desc = item["desc"] or "확인하기"
-        print(f"📨 Sending card {i}: {display_title}")
-        send_feed_card(access_token, display_title, display_desc, item["url"])
-
-    print(f"✅ 총 {len(items)}개의 카드를 발송 완료했습니다.")
+    text = build_text_message(items)
+    result = send_kakao_text(access_token, text)
+    print("카카오 응답:", result)
 
 if __name__ == "__main__":
     main()
