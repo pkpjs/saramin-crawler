@@ -3,7 +3,7 @@ import time
 import os
 import re
 import requests
-from bs4 import BeautifulSoup, NavigableString
+from bs4 import BeautifulSoup
 import pandas as pd
 from datetime import datetime
 import smtplib
@@ -14,9 +14,9 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Dict, Tuple, Optional, List
 
 
-# -------------------------------
-# Saramin Crawler (검색 + 상세 파싱: A모드=원문 정리 + 요약)
-# -------------------------------
+# =========================================================
+# Saramin Crawler (정확 본문 추출 + 노이즈 제거 + 요약 + 메일 CSV 미첨부)
+# =========================================================
 class SaraminCrawler:
     def __init__(self):
         self.api_url = "https://www.saramin.co.kr/zf_user/search/get-recruit-list"
@@ -29,7 +29,7 @@ class SaraminCrawler:
             "Referer": "https://www.saramin.co.kr/zf_user/search",
             "X-Requested-With": "XMLHttpRequest",
         }
-        # 🔎 검색 조건(요청 조건)
+        # 🔎 검색 조건(필요시 수정)
         self.params = {
             "searchType": "search",
             "loc_mcd": "106000,104000,105000,107000,110000,111000",   # 부산/대구/대전/울산/경남/경북
@@ -47,19 +47,28 @@ class SaraminCrawler:
             "recruitSort": "relation"                                # 관련도순
         }
 
-        # 불필요 텍스트 제거 패턴(상세 본문 클린업)
+        # --------- 텍스트 정리/노이즈 제거 패턴 ---------
+        # 메뉴/광고/푸터/고객센터/로그인/회원가입 등
         self.noise_patterns = [
-            r"\b로그인\b", r"\b회원가입\b", r"기업서비스", r"사람인\s*비즈니스", r"사람인\s*고객센터",
-            r"\bTOP\b", r"\b이전공고\b", r"\b다음공고\b", r"검색\s*폼", r"공지사항", r"이벤트",
-            r"커리어\s*피드", r"사람인\s*스토어", r"채용정보\s*지역별", r"HOT100", r"헤드헌팅", r"큐레이션",
-            r"파견대행", r"외국인\s*채용", r"중장년\s*채용", r"취업축하금", r"신입·인턴", r"채용달력",
-            r"연봉정보", r"면접후기", r"기업큐레이션", r"이력서\s*양식", r"HR매거진",
-            r"인적성검사", r"서류\s*작성\s*코칭", r"면접\s*코칭", r"자기\s*계발", r"자격증\s*준비",
-            r"사람인\s*인공지능", r"맞춤\s*공고", r"Ai\s*매치", r"Ai\s*모의면접"
+            r"\b로그인\b", r"\b회원가입\b", r"기업서비스", r"기업홈", r"공고 등록", r"후보자 리스트", r"인재풀",
+            r"인적성\s*·\s*평가도구", r"채용상품", r"사람인\s*비즈니스", r"사람인\s*스토어", r"커리어피드",
+            r"채용정보", r"지역별", r"직업별", r"역세권별", r"HOT100", r"헤드헌팅", r"채용관", r"큐레이션",
+            r"파견대행", r"외국인\s*채용", r"중장년\s*채용", r"취업축하금", r"신입·인턴", r"실시간\s*공고",
+            r"채용달력", r"신입연봉", r"자소서", r"현직자\s*인터뷰", r"면접\s*코칭", r"자기\s*계발",
+            r"자격증\s*준비", r"기업·연봉", r"연봉정보", r"면접후기", r"기업큐레이션", r"커뮤니티",
+            r"취업\s*자료", r"멘토링매치", r"취업TOOL", r"이력서\s*양식", r"HR매거진",
+            r"공지사항", r"이벤트", r"고객센터", r"help@saramin\.co\.kr", r"FAX\s*\d",
+            r"사람인\s*인공지능", r"맞춤\s*공고", r"Ai\s*매치", r"Ai\s*모의면접", r"포지션제안",
+            r"취업\s*준비,?\s*이걸로\s*끝", r"합격\s*자소서", r"클래스", r"TOP\b",
+            r"본문\s*바로가기", r"이전공고", r"다음공고", r"검색\s*폼", r"검색어입력",
         ]
         self.noise_regex = re.compile("|".join(self.noise_patterns))
 
-    # ---------- 유틸 ----------
+        # 섹션 타이틀 후보
+        self.req_titles = ["자격요건", "지원자격", "필수요건", "우대사항", "우대조건", "모집요강", "담당업무"]
+        self.ben_titles = ["복리후생", "혜택", "지원제도", "회사복지"]
+
+    # ----------------- 유틸 -----------------
     @staticmethod
     def _clean_ws(text: str) -> str:
         if not text:
@@ -77,8 +86,11 @@ class SaraminCrawler:
             return True
         if self.noise_regex.search(line):
             return True
-        # 지나치게 메뉴성 나열
-        if sum(1 for ch in line if ch == "·" or ch == "|") >= 3:
+        # 메뉴형 나열/의미 없는 반복
+        if sum(1 for ch in line if ch in ["·", "|", "/"]) >= 3:
+            return True
+        # 연락처/고객센터/법적 문구/주소 등
+        if re.search(r"\d{2,4}-\d{3,4}-\d{3,4}", line):
             return True
         return False
 
@@ -93,7 +105,7 @@ class SaraminCrawler:
             out.append(k)
         return out
 
-    # ---------- 검색결과 파싱 ----------
+    # ----------------- 검색결과 파싱 -----------------
     def _parse_jobs_from_innerHTML(self, inner_html):
         soup = BeautifulSoup(inner_html, "html.parser")
         jobs = []
@@ -190,42 +202,63 @@ class SaraminCrawler:
 
         return df
 
-    # ---------- 상세페이지 파싱 (A 모드: 원문+정제) ----------
+    # ----------------- 상세 본문 추출 로직 (핵심) -----------------
     def _find_content_container(self, soup: BeautifulSoup) -> Optional[BeautifulSoup]:
         """
-        상세 본문이 들어있는 최상위 컨테이너를 최대한 정확히 선택
+        사람인 공고 본문이 포함된 정확한 영역만 추출.
+        우선순위로 후보 선택자를 평가하고, 텍스트가 가장 풍부한 노드를 선택.
         """
-        selectors = [
+        candidates = [
+            "#content .wrap_jv_cont",
             "#content .wrap_jview",
-            "#content .jv-cont",
-            "#content .jv_detail",
             "#content .cont",
-            "#recruit_info",
             ".wrap_jv_cont",
+            ".jv_cont",
+            ".jv-cont",
+            ".jv_detail",
             ".jview .cont",
-            "#content"
+            "#recruit_info",
+            "section[class*='cont']",
         ]
-        for sel in selectors:
+        best_node = None
+        best_len = 0
+        for sel in candidates:
             node = soup.select_one(sel)
-            if node and len(node.get_text(strip=True)) > 50:
-                return node
-        return soup  # fallback
+            if not node:
+                continue
+            text_len = len(node.get_text(" ", strip=True))
+            if text_len > best_len:
+                best_len = text_len
+                best_node = node
+
+        # 최종 fallback: #content 가 있으면 사용, 없으면 soup
+        if not best_node:
+            best_node = soup.select_one("#content") or soup
+        return best_node
 
     def _strip_noise_nodes(self, node: BeautifulSoup):
         """
-        본문 외 잡영역 제거
+        본문 외 잡영역 제거 (태그/클래스 기준)
         """
+        # 태그 단위 제거
         for tag in node.find_all(["script", "style", "noscript", "iframe"]):
             tag.decompose()
         for tag in node.find_all(["header", "footer", "nav", "aside"]):
             tag.decompose()
-        # 메뉴/광고성 섹션들 추정 클래스 제거
+
+        # 클래스/아이디 기반 제거 (광고/공유/배너/유틸)
         junk_classes = [
             "gnb", "lnb", "breadcrumb", "sidebar", "banner", "ad", "advert", "footer",
-            "login", "signup", "jv-relate", "sns", "share", "floating", "btn_top"
+            "login", "signup", "jv-relate", "sns", "share", "floating", "btn_top",
+            "pagination", "paging", "quick", "tooltip", "top", "util", "wrap_gnb",
         ]
         for cls in junk_classes:
             for t in node.select(f".{cls}"):
+                t.decompose()
+
+        junk_ids = ["footer", "header", "gnb", "lnb"]
+        for jid in junk_ids:
+            for t in node.select(f"#{jid}"):
                 t.decompose()
 
     def _extract_label_value(self, soup: BeautifulSoup, labels: List[str]) -> Optional[str]:
@@ -264,10 +297,10 @@ class SaraminCrawler:
 
     def _extract_section_text(self, node: BeautifulSoup, title_patterns: List[str]) -> Optional[str]:
         """
-        섹션(자격요건/복리후생 등)을 정제 텍스트로 추출
-        - 타이틀과 가까운 DOM을 우선 추적
+        섹션(자격요건/복리후생 등) 정제 텍스트 추출
+        - 타이틀과 가까운 래퍼 DOM 우선
         - li/p/div/span 텍스트 취합
-        - 노이즈 라인 제거, 중복 제거
+        - 노이즈 라인 제거 & 중복 제거
         """
         regex = re.compile("|".join(title_patterns), re.IGNORECASE)
         hits = node.find_all(string=regex)
@@ -275,32 +308,27 @@ class SaraminCrawler:
 
         for hit in hits:
             box = hit
-            # 상위로 2~3단계 올려 섹션 래퍼 추정
+            # 상위로 최대 3단계 올려 섹션 래퍼 추정
             for _ in range(3):
                 if box and getattr(box, "parent", None):
                     box = box.parent
+
             if not box:
                 continue
 
             texts = []
             for t in box.find_all(["li", "p", "dd", "td", "div", "span"]):
-                s = t.get_text(" ", strip=True)
-                s = self._clean_ws(s)
+                s = self._clean_ws(t.get_text(" ", strip=True))
                 if s:
                     texts.append(s)
 
             if not texts:
-                # 인접 형제에서 일정 개수 추출
-                sibs = []
-                for sib in box.find_all_next(["li", "p", "dd", "td", "div", "span"], limit=60):
-                    txt = self._clean_ws(sib.get_text(" ", strip=True))
-                    if txt:
-                        sibs.append(txt)
-                texts = sibs
+                continue
 
             # 노이즈 필터
             texts = [ln for ln in texts if not self._is_noise_line(ln)]
-            # 너무 긴 줄은 문장 단위로 자르기
+
+            # 너무 긴 줄은 문장 단위로 쪼개기
             refined = []
             for ln in texts:
                 if len(ln) > 300:
@@ -317,20 +345,21 @@ class SaraminCrawler:
                 candidates.append("\n".join(refined))
 
         if candidates:
-            raw = max(candidates, key=len)  # 가장 긴 것을 섹션으로 간주
+            raw = max(candidates, key=len)  # 가장 정보량 많은 섹션
             raw = self._clean_ws(raw[:8000])  # 안전 길이 제한
-            # 최종적으로 메뉴성/광고성 라인 추가 필터링
+            # 최종 필터링/중복제거
             final_lines = [ln for ln in raw.split("\n") if not self._is_noise_line(ln)]
             final = "\n".join(self._dedup_lines_ordered(final_lines))
             return final if final.strip() else None
 
         return None
 
+    # ----------------- 요약 -----------------
     def _summarize_bullets(self, text: str, max_lines: int = 5) -> str:
         """
-        간단 규칙 기반 요약:
-        - 불릿/숫자/키워드 포함 라인 위주 선별
-        - 전문/광고성 문구 제거
+        규칙 기반 간단 요약(불릿):
+        - 키워드/불릿/숫자 시작 라인 가중
+        - 짧은 핵심문 만 추출
         """
         if not text:
             return ""
@@ -338,12 +367,11 @@ class SaraminCrawler:
         lines = [self._clean_ws(x) for x in text.split("\n")]
         lines = [x for x in lines if x and not self._is_noise_line(x)]
 
-        # 키워드 점수 기반 선별
         keywords = [
             "필수", "우대", "경력", "신입", "개발", "운영", "Python", "Java", "C++", "서버", "DB",
-            "AWS", "OCI", "Linux", "네트워크", "보안", "자격", "학력", "전공", "우대사항", "담당업무",
-            "근무", "근무지", "연봉", "협의", "정규직", "복리후생", "4대보험", "식대", "연차", "퇴직금",
-            "포트폴리오", "자격증", "정보처리", "전문연", "병역", "군필"
+            "AWS", "GCP", "OCI", "Linux", "네트워크", "보안", "자격", "학력", "전공", "담당업무",
+            "근무", "근무지", "연봉", "협의", "정규직", "4대보험", "식대", "연차", "퇴직", "포트폴리오",
+            "자격증", "정보처리", "전문연", "병역", "군필", "우대사항", "우대조건"
         ]
         kw_re = re.compile("|".join([re.escape(k) for k in keywords]), re.IGNORECASE)
 
@@ -358,7 +386,7 @@ class SaraminCrawler:
                 score += 3
             scored.append((score, ln))
 
-        scored.sort(key=lambda x: (-x[0], len(x[1])))  # 점수↓, 길이↑
+        scored.sort(key=lambda x: (-x[0], len(x[1])))
         picked = []
         used = set()
         for _, ln in scored:
@@ -370,16 +398,15 @@ class SaraminCrawler:
                 break
 
         if not picked:
-            # fallback: 앞부분 상위 3~5줄
             picked = lines[:max_lines]
 
-        # 불릿 포맷으로 정리
         return "• " + "\n• ".join([self._clean_ws(x) for x in picked])
 
+    # ----------------- 상세 페이지 요청+파싱 -----------------
     def _fetch_and_parse_detail(self, session: requests.Session, url: str) -> Tuple[str, Dict[str, str]]:
         """
-        상세페이지 1건 요청+파싱. (세션/타임아웃/리트라이 내장)
-        반환: (url, {employment_type, salary, requirements_raw, benefits_raw, requirements_summary, benefits_summary})
+        상세페이지 1건 요청+파싱.
+        반환: (url, dict(employment_type/salary/requirements_raw/benefits_raw + summary))
         """
         result = {
             "employment_type": "", "salary": "",
@@ -405,24 +432,19 @@ class SaraminCrawler:
                 sal = self._extract_label_value(content, ["급여", "연봉", "보수", "급여조건"])
 
                 # 섹션 기반 (자격요건/복리후생)
-                req = self._extract_section_text(
-                    content,
-                    ["자격요건", "지원자격", "필수요건", "우대사항", "우대조건", "모집요강", "담당업무"]
-                )
-                ben = self._extract_section_text(
-                    content,
-                    ["복리후생", "혜택", "지원제도", "회사복지"]
-                )
+                req = self._extract_section_text(content, self.req_titles)
+                ben = self._extract_section_text(content, self.ben_titles)
 
                 # 요약 생성
                 req_sum = self._summarize_bullets(req or "", max_lines=5) if req else ""
                 ben_sum = self._summarize_bullets(ben or "", max_lines=4) if ben else ""
 
+                # 최종 결과
                 result.update({
                     "employment_type": emp or "",
                     "salary": sal or "",
-                    "requirements_raw": req or "",
-                    "benefits_raw": ben or "",
+                    "requirements_raw": (req or "")[:8000],
+                    "benefits_raw": (ben or "")[:8000],
                     "requirements_summary": req_sum,
                     "benefits_summary": ben_sum
                 })
@@ -431,7 +453,7 @@ class SaraminCrawler:
                 time.sleep(0.6)
                 continue
 
-        return url, result  # 실패 시 빈 값
+        return url, result  # 실패 시 기본값
 
     def enrich_with_details(self, df: pd.DataFrame, max_workers: int = 8) -> pd.DataFrame:
         """
@@ -460,7 +482,7 @@ class SaraminCrawler:
 
         return df
 
-    # ---------- HTML/이메일 ----------
+    # ----------------- HTML/메일 -----------------
     def build_html_page(self, df: pd.DataFrame, out_html_path: str, page_title: str = "채용공고 결과(정제+요약)"):
         out_path = Path(out_html_path)
         out_path.parent.mkdir(parents=True, exist_ok=True)
@@ -475,8 +497,9 @@ class SaraminCrawler:
         exist_cols = [c for c in cols if c in df.columns]
         styled = df[exist_cols].rename(columns={
             'title':'제목','company':'회사','location':'위치','career':'경력',
-            'education':'학력','deadline':'마감일','employment_type':'고용형태',
-            'salary':'급여','requirements_summary':'자격요건(요약)','benefits_summary':'복리후생(요약)',
+            'education':'학력','deadline':'마감일',
+            'employment_type':'고용형태','salary':'급여',
+            'requirements_summary':'자격요건(요약)','benefits_summary':'복리후생(요약)',
             'requirements_raw':'자격요건(원문)','benefits_raw':'복리후생(원문)',
             'link':'링크','crawled_at':'수집시각'
         }).copy()
@@ -485,7 +508,7 @@ class SaraminCrawler:
         if '링크' in styled.columns:
             styled['링크'] = styled['링크'].apply(lambda x: f'<a href="{x}" target="_blank">바로가기</a>' if x else '')
 
-        # 원문은 줄바꿈 보존
+        # 줄바꿈 보존
         for c in ['자격요건(원문)', '복리후생(원문)', '자격요건(요약)', '복리후생(요약)']:
             if c in styled.columns:
                 styled[c] = styled[c].astype(str).str.replace("\n", "<br>")
@@ -597,9 +620,9 @@ a {{ text-decoration:none; color:#3498db; }}
             print(f"❌ 이메일 전송 실패: {e}")
 
 
-# -------------------------------
+# =========================================================
 # 실행부
-# -------------------------------
+# =========================================================
 if __name__ == "__main__":
     crawler = SaraminCrawler()
 
@@ -614,7 +637,7 @@ if __name__ == "__main__":
     df = crawler.enrich_with_details(df, max_workers=8)
     print("🧩 상세페이지 파싱 완료.")
 
-    # 3) CSV 저장 (백업/검증용: 메일에는 첨부하지 않음)
+    # 3) CSV 저장 (로컬 백업/검증용: 메일에는 첨부하지 않음)
     ts = datetime.now().strftime('%Y%m%d_%H%M%S')
     out_csv = f"saramin_results_raw_{ts}.csv"
     df.to_csv(out_csv, index=False, encoding="utf-8-sig")
