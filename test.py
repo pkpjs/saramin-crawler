@@ -14,9 +14,6 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Dict, Tuple, Optional, List
 
 
-# =========================================================
-# Saramin Crawler (정확 본문 추출 + 노이즈 제거 + 요약 + 메일 CSV 미첨부)
-# =========================================================
 class SaraminCrawler:
     def __init__(self):
         self.api_url = "https://www.saramin.co.kr/zf_user/search/get-recruit-list"
@@ -29,83 +26,69 @@ class SaraminCrawler:
             "Referer": "https://www.saramin.co.kr/zf_user/search",
             "X-Requested-With": "XMLHttpRequest",
         }
-        # 🔎 검색 조건(필요시 수정)
         self.params = {
             "searchType": "search",
-            "loc_mcd": "106000,104000,105000,107000,110000,111000",   # 부산/대구/대전/울산/경남/경북
-            "cat_kewd": "83,84,85,90,104,108,111,112,114,116",       # 데이터엔지니어 외 10개
-            "company_cd": "0,1,2,3,4,5,6,7,9,10",                    # 회사형태 전체
-            "exp_cd": "1",                                           # 신입
-            "exp_none": "y",                                         # 경력무관 포함
-            "job_type": "1",                                         # 정규직
+            "loc_mcd": "106000,104000,105000,107000,110000,111000",
+            "cat_kewd": "83,84,85,90,104,108,111,112,114,116",
+            "company_cd": "0,1,2,3,4,5,6,7,9,10",
+            "exp_cd": "1",
+            "exp_none": "y",
+            "job_type": "1",
             "search_optional_item": "y",
             "search_done": "y",
             "panel_count": "y",
             "preview": "y",
             "recruitPage": 1,
-            "recruitPageCount": 40,                                  # 페이지당 40개
-            "recruitSort": "relation"                                # 관련도순
+            "recruitPageCount": 40,
+            "recruitSort": "relation"
         }
 
-        # --------- 텍스트 정리/노이즈 제거 패턴 ---------
-        # 메뉴/광고/푸터/고객센터/로그인/회원가입 등
-        self.noise_patterns = [
-            r"\b로그인\b", r"\b회원가입\b", r"기업서비스", r"기업홈", r"공고 등록", r"후보자 리스트", r"인재풀",
-            r"인적성\s*·\s*평가도구", r"채용상품", r"사람인\s*비즈니스", r"사람인\s*스토어", r"커리어피드",
-            r"채용정보", r"지역별", r"직업별", r"역세권별", r"HOT100", r"헤드헌팅", r"채용관", r"큐레이션",
-            r"파견대행", r"외국인\s*채용", r"중장년\s*채용", r"취업축하금", r"신입·인턴", r"실시간\s*공고",
-            r"채용달력", r"신입연봉", r"자소서", r"현직자\s*인터뷰", r"면접\s*코칭", r"자기\s*계발",
-            r"자격증\s*준비", r"기업·연봉", r"연봉정보", r"면접후기", r"기업큐레이션", r"커뮤니티",
-            r"취업\s*자료", r"멘토링매치", r"취업TOOL", r"이력서\s*양식", r"HR매거진",
-            r"공지사항", r"이벤트", r"고객센터", r"help@saramin\.co\.kr", r"FAX\s*\d",
-            r"사람인\s*인공지능", r"맞춤\s*공고", r"Ai\s*매치", r"Ai\s*모의면접", r"포지션제안",
-            r"취업\s*준비,?\s*이걸로\s*끝", r"합격\s*자소서", r"클래스", r"TOP\b",
-            r"본문\s*바로가기", r"이전공고", r"다음공고", r"검색\s*폼", r"검색어입력",
-        ]
-        self.noise_regex = re.compile("|".join(self.noise_patterns))
-
-        # 섹션 타이틀 후보
-        self.req_titles = ["자격요건", "지원자격", "필수요건", "우대사항", "우대조건", "모집요강", "담당업무"]
-        self.ben_titles = ["복리후생", "혜택", "지원제도", "회사복지"]
-
-    # ----------------- 유틸 -----------------
     @staticmethod
-    def _clean_ws(text: str) -> str:
+    def _clean_text(text: str) -> str:
         if not text:
             return ""
         t = text.replace("\r", "\n")
-        t = re.sub(r"\u00A0", " ", t)  # non-breaking space
+        t = re.sub(r"\u00A0", " ", t)
         t = re.sub(r"[ \t]+", " ", t)
         t = re.sub(r"\n{2,}", "\n", t)
         return t.strip()
 
-    def _is_noise_line(self, line: str) -> bool:
-        if not line:
-            return True
-        if len(line) < 2:
-            return True
-        if self.noise_regex.search(line):
-            return True
-        # 메뉴형 나열/의미 없는 반복
-        if sum(1 for ch in line if ch in ["·", "|", "/"]) >= 3:
-            return True
-        # 연락처/고객센터/법적 문구/주소 등
-        if re.search(r"\d{2,4}-\d{3,4}-\d{3,4}", line):
-            return True
-        return False
+    @staticmethod
+    def _clean_ws(text: str) -> str:
+        if not text:
+            return ""
+        text = re.sub(r"\s+", " ", text)
+        return text.strip()
 
-    def _dedup_lines_ordered(self, lines: List[str]) -> List[str]:
+    @staticmethod
+    def _dedup_lines_ordered(lines: List[str]) -> List[str]:
         seen = set()
         out = []
         for ln in lines:
             k = ln.strip()
-            if not k or k in seen:
-                continue
-            seen.add(k)
-            out.append(k)
+            if k and k not in seen:
+                out.append(k)
+                seen.add(k)
         return out
 
-    # ----------------- 검색결과 파싱 -----------------
+    @staticmethod
+    def _is_noise_line(t: str) -> bool:
+        if not t:
+            return True
+        bad = [
+            "로그인", "회원가입", "기업서비스", "TOP", "고객센터", "이벤트", "도움말",
+            "사람인", "커리어피드", "인적성", "스토어", "면접 코칭", "자소서", "클래스",
+            "공지사항", "검색", "홈", "채용정보", "기업·연봉", "커뮤니티", "SNS", "공유",
+            "Copyright", "사업자", "FAX", "help@saramin.co.kr"
+        ]
+        if len(t) < 3:
+            return True
+        if any(b in t for b in bad):
+            return True
+        if re.fullmatch(r"[\-\–\—\|•·]+", t):
+            return True
+        return False
+
     def _parse_jobs_from_innerHTML(self, inner_html):
         soup = BeautifulSoup(inner_html, "html.parser")
         jobs = []
@@ -118,18 +101,14 @@ class SaraminCrawler:
                 title = a.get_text(strip=True)
                 href = a.get("href", "")
                 link = "https://www.saramin.co.kr" + href if href.startswith("/") else href
-
                 company_el = item.select_one("strong.corp_name a, strong.corp_name")
                 company = company_el.get_text(strip=True) if company_el else ""
-
                 cond_spans = item.select("div.job_condition span")
                 location = cond_spans[0].get_text(strip=True) if len(cond_spans) > 0 else ""
                 career   = cond_spans[1].get_text(strip=True) if len(cond_spans) > 1 else ""
                 edu      = cond_spans[2].get_text(strip=True) if len(cond_spans) > 2 else ""
-
                 deadline_el = item.select_one("div.job_date span.date")
                 deadline = deadline_el.get_text(strip=True) if deadline_el else ""
-
                 jobs.append({
                     "rec_idx": rec_idx,
                     "title": title,
@@ -151,271 +130,165 @@ class SaraminCrawler:
         resp = requests.get(self.api_url, params=params, headers=self.headers, timeout=30)
         resp.raise_for_status()
         data = resp.json()
-
         inner_html = data.get("innerHTML", "")
         count_str = data.get("count", "0")
         try:
             total_count = int(str(count_str).replace(",", ""))
         except Exception:
             total_count = 0
-
         jobs = self._parse_jobs_from_innerHTML(inner_html) if inner_html else []
         return jobs, total_count
 
     def crawl_all(self, sleep_sec=0.6, page_limit=None) -> pd.DataFrame:
-        print("🔎 수집 시작...")
         all_jobs = []
         first_page_jobs, total_count = self._fetch_page(1)
         if not first_page_jobs:
-            print("⚠ 첫 페이지에서 공고를 찾지 못했습니다. (헤더/파라미터 확인 필요)")
             return pd.DataFrame()
-
         all_jobs.extend(first_page_jobs)
-
         page_count = math.ceil(total_count / int(self.params["recruitPageCount"])) if total_count else 1
         if page_limit is not None:
             page_count = min(page_count, page_limit)
-
-        print(f"📊 총 {total_count}건 추정, {page_count}페이지 예정")
-
         for p in range(2, page_count + 1):
-            print(f"📄 {p}/{page_count} 페이지 수집 중...")
             jobs, _ = self._fetch_page(p)
             if not jobs:
-                print("⛔ 더 이상 공고가 없습니다.")
                 break
             all_jobs.extend(jobs)
             time.sleep(sleep_sec)
-
         df = pd.DataFrame(all_jobs)
         if df.empty:
-            print("⚠ 수집된 데이터가 없습니다.")
             return df
-
-        # 중복 제거: rec_idx 우선, 없으면 link
         if "rec_idx" in df.columns:
             df["__dedup_key"] = df["rec_idx"].where(df["rec_idx"].astype(bool), other=df["link"])
             df.drop_duplicates(subset=["__dedup_key"], inplace=True)
             df.drop(columns=["__dedup_key"], inplace=True)
         else:
             df.drop_duplicates(subset=["link"], inplace=True)
-
         return df
 
-    # ----------------- 상세 본문 추출 로직 (핵심) -----------------
-    def _find_content_container(self, soup: BeautifulSoup) -> Optional[BeautifulSoup]:
-        """
-        사람인 공고 본문이 포함된 정확한 영역만 추출.
-        우선순위로 후보 선택자를 평가하고, 텍스트가 가장 풍부한 노드를 선택.
-        """
-        candidates = [
-            "#content .wrap_jv_cont",
-            "#content .wrap_jview",
-            "#content .cont",
-            ".wrap_jv_cont",
-            ".jv_cont",
-            ".jv-cont",
-            ".jv_detail",
-            ".jview .cont",
-            "#recruit_info",
-            "section[class*='cont']",
-        ]
-        best_node = None
-        best_len = 0
-        for sel in candidates:
-            node = soup.select_one(sel)
-            if not node:
-                continue
-            text_len = len(node.get_text(" ", strip=True))
-            if text_len > best_len:
-                best_len = text_len
-                best_node = node
-
-        # 최종 fallback: #content 가 있으면 사용, 없으면 soup
-        if not best_node:
-            best_node = soup.select_one("#content") or soup
-        return best_node
-
-    def _strip_noise_nodes(self, node: BeautifulSoup):
-        """
-        본문 외 잡영역 제거 (태그/클래스 기준)
-        """
-        # 태그 단위 제거
-        for tag in node.find_all(["script", "style", "noscript", "iframe"]):
-            tag.decompose()
-        for tag in node.find_all(["header", "footer", "nav", "aside"]):
-            tag.decompose()
-
-        # 클래스/아이디 기반 제거 (광고/공유/배너/유틸)
-        junk_classes = [
-            "gnb", "lnb", "breadcrumb", "sidebar", "banner", "ad", "advert", "footer",
-            "login", "signup", "jv-relate", "sns", "share", "floating", "btn_top",
-            "pagination", "paging", "quick", "tooltip", "top", "util", "wrap_gnb",
-        ]
-        for cls in junk_classes:
-            for t in node.select(f".{cls}"):
-                t.decompose()
-
-        junk_ids = ["footer", "header", "gnb", "lnb"]
-        for jid in junk_ids:
-            for t in node.select(f"#{jid}"):
-                t.decompose()
-
     def _extract_label_value(self, soup: BeautifulSoup, labels: List[str]) -> Optional[str]:
-        """
-        라벨-값 구조 추출 (dt/dd, th/td, strong/label 등)
-        """
         nodes = soup.find_all(string=re.compile("|".join([re.escape(x) for x in labels])))
         for node in nodes:
             parent = node.parent
             if not parent:
                 continue
-            # dt -> dd
             if parent.name == "dt":
                 dd = parent.find_next_sibling("dd")
                 if dd:
-                    return self._clean_ws(dd.get_text(" ", strip=True))
-            # th -> td
+                    return self._clean_text(dd.get_text(" ", strip=True))
             if parent.name == "th":
                 td = parent.find_next_sibling("td")
                 if td:
-                    return self._clean_ws(td.get_text(" ", strip=True))
-            # strong/label 바로 다음 형제
+                    return self._clean_text(td.get_text(" ", strip=True))
             sib = parent.find_next_sibling()
             if sib and sib.name in ["dd", "td", "p", "div", "span"]:
-                val = self._clean_ws(sib.get_text(" ", strip=True))
+                val = self._clean_text(sib.get_text(" ", strip=True))
                 if val:
                     return val
-            # 같은 줄에서 콜론 등으로 이어진 케이스
-            line = self._clean_ws(parent.get_text(" ", strip=True))
+            line = self._clean_text(parent.get_text(" ", strip=True))
             for kw in labels:
                 if kw in line:
                     after = line.split(kw, 1)[1].lstrip(": -—\t")
                     if after:
-                        return self._clean_ws(after)
+                        return self._clean_text(after)
         return None
 
-    def _extract_section_text(self, node: BeautifulSoup, title_patterns: List[str]) -> Optional[str]:
-        """
-        섹션(자격요건/복리후생 등) 정제 텍스트 추출
-        - 타이틀과 가까운 래퍼 DOM 우선
-        - li/p/div/span 텍스트 취합
-        - 노이즈 라인 제거 & 중복 제거
-        """
-        regex = re.compile("|".join(title_patterns), re.IGNORECASE)
-        hits = node.find_all(string=regex)
-        candidates = []
+    def _find_content_container(self, soup: BeautifulSoup) -> Optional[BeautifulSoup]:
+        candidates = [
+            "#content .wrap_jv_cont",
+            "#content .jv_cont",
+            ".wrap_jv_cont",
+            ".jv_cont",
+            "#recruit_info",
+            ".content",
+            "section[class*=jv]",
+            "div[class*=jv_]",
+        ]
+        best_node = None
+        best_length = 0
+        for selector in candidates:
+            nodes = soup.select(selector)
+            for node in nodes:
+                text = node.get_text(" ", strip=True)
+                if text and len(text) > best_length:
+                    best_length = len(text)
+                    best_node = node
+        if not best_node:
+            best_node = soup.select_one("#content") or soup.body or soup
+        self._strip_noise_nodes(best_node)
+        return best_node
 
+    def _strip_noise_nodes(self, node: BeautifulSoup):
+        for tag in node.find_all(["script", "style", "noscript", "header", "footer", "nav", "aside", "iframe"]):
+            tag.decompose()
+        junk_keywords = [
+            "sns", "share", "banner", "ad", "advert", "login", "회원",
+            "기업서비스", "검색", "TOP", "footer", "고객센터", "이벤트",
+            "사람인스토어", "취업TOOL", "헤드헌팅", "인적성검사", "커뮤니티",
+            "회사소개", "인재채용", "회원약관", "개인정보처리방침", "위치기반",
+            "제휴문의", "도움말", "FAQ", "MY", "스크랩", "지원현황", "최근본"
+        ]
+        for div in node.find_all("div"):
+            text = div.get_text(" ", strip=True)
+            if any(jk in text for jk in junk_keywords) and len(text) < 300:
+                div.decompose()
+
+    def _extract_section(self, content_node: BeautifulSoup, title_keywords: List[str]) -> Optional[str]:
+        if not content_node:
+            return None
+        regex = re.compile("|".join([re.escape(x) for x in title_keywords]), re.IGNORECASE)
+        hits = content_node.find_all(string=regex)
+        results = []
         for hit in hits:
-            box = hit
-            # 상위로 최대 3단계 올려 섹션 래퍼 추정
+            section = hit.find_parent()
             for _ in range(3):
-                if box and getattr(box, "parent", None):
-                    box = box.parent
-
-            if not box:
+                if section and section.parent:
+                    section = section.parent
+            if not section:
                 continue
-
             texts = []
-            for t in box.find_all(["li", "p", "dd", "td", "div", "span"]):
-                s = self._clean_ws(t.get_text(" ", strip=True))
-                if s:
-                    texts.append(s)
-
-            if not texts:
-                continue
-
-            # 노이즈 필터
-            texts = [ln for ln in texts if not self._is_noise_line(ln)]
-
-            # 너무 긴 줄은 문장 단위로 쪼개기
-            refined = []
-            for ln in texts:
-                if len(ln) > 300:
-                    parts = re.split(r"[•·\-\u2022\|\n]+", ln)
+            for tag in section.find_all(["li", "p", "div", "td", "span"]):
+                t = tag.get_text(" ", strip=True)
+                if t and not self._is_noise_line(t):
+                    texts.append(self._clean_ws(t))
+            lines = []
+            for text in texts:
+                if len(text) > 200:
+                    parts = re.split(r"[•·\u2022\-\|\n]+", text)
                     for p in parts:
-                        p = self._clean_ws(p)
+                        p = p.strip()
                         if p and not self._is_noise_line(p):
-                            refined.append(p)
+                            lines.append(p)
                 else:
-                    refined.append(ln)
-
-            refined = self._dedup_lines_ordered(refined)
-            if refined:
-                candidates.append("\n".join(refined))
-
-        if candidates:
-            raw = max(candidates, key=len)  # 가장 정보량 많은 섹션
-            raw = self._clean_ws(raw[:8000])  # 안전 길이 제한
-            # 최종 필터링/중복제거
-            final_lines = [ln for ln in raw.split("\n") if not self._is_noise_line(ln)]
-            final = "\n".join(self._dedup_lines_ordered(final_lines))
-            return final if final.strip() else None
-
+                    lines.append(text)
+            lines = self._dedup_lines_ordered(lines)
+            if lines and len("\n".join(lines)) > 50:
+                results.append("\n".join(lines))
+        if results:
+            return max(results, key=len)
         return None
 
-    # ----------------- 요약 -----------------
-    def _summarize_bullets(self, text: str, max_lines: int = 5) -> str:
-        """
-        규칙 기반 간단 요약(불릿):
-        - 키워드/불릿/숫자 시작 라인 가중
-        - 짧은 핵심문 만 추출
-        """
+    def _summarize(self, text: str, max_lines=5) -> str:
         if not text:
             return ""
-
-        lines = [self._clean_ws(x) for x in text.split("\n")]
-        lines = [x for x in lines if x and not self._is_noise_line(x)]
-
-        keywords = [
-            "필수", "우대", "경력", "신입", "개발", "운영", "Python", "Java", "C++", "서버", "DB",
-            "AWS", "GCP", "OCI", "Linux", "네트워크", "보안", "자격", "학력", "전공", "담당업무",
-            "근무", "근무지", "연봉", "협의", "정규직", "4대보험", "식대", "연차", "퇴직", "포트폴리오",
-            "자격증", "정보처리", "전문연", "병역", "군필", "우대사항", "우대조건"
-        ]
-        kw_re = re.compile("|".join([re.escape(k) for k in keywords]), re.IGNORECASE)
-
+        lines = [self._clean_ws(x) for x in text.split("\n") if x.strip()]
+        lines = [x for x in lines if not self._is_noise_line(x)]
+        keywords = ["경력", "신입", "우대", "필수", "개발", "운영", "학력", "전공", "자격증", "포트폴리오", "4대보험", "연차", "복지", "급여", "지원", "근무", "기술", "언어", "스택"]
         scored = []
         for ln in lines:
-            score = 0
-            if re.search(r"^[\-\•\u2022\*\d]+\s", ln):  # 불릿/숫자 시작
+            score = sum(1 for kw in keywords if kw in ln)
+            if re.match(r"^[•\-*\d]+\s*", ln):
                 score += 2
-            if len(ln) <= 140:
+            if len(ln) < 150:
                 score += 1
-            if kw_re.search(ln):
-                score += 3
             scored.append((score, ln))
-
         scored.sort(key=lambda x: (-x[0], len(x[1])))
-        picked = []
-        used = set()
-        for _, ln in scored:
-            if ln in used:
-                continue
-            used.add(ln)
-            picked.append(ln)
-            if len(picked) >= max_lines:
-                break
+        picked = [ln for _, ln in scored[:max_lines]]
+        return "• " + "\n• ".join(picked) if picked else ""
 
-        if not picked:
-            picked = lines[:max_lines]
-
-        return "• " + "\n• ".join([self._clean_ws(x) for x in picked])
-
-    # ----------------- 상세 페이지 요청+파싱 -----------------
     def _fetch_and_parse_detail(self, session: requests.Session, url: str) -> Tuple[str, Dict[str, str]]:
-        """
-        상세페이지 1건 요청+파싱.
-        반환: (url, dict(employment_type/salary/requirements_raw/benefits_raw + summary))
-        """
-        result = {
-            "employment_type": "", "salary": "",
-            "requirements_raw": "", "benefits_raw": "",
-            "requirements_summary": "", "benefits_summary": ""
-        }
+        result = {"employment_type": "", "salary": "", "requirements_raw": "", "benefits_raw": ""}
         if not url:
             return url, result
-
         for _ in range(3):
             try:
                 resp = session.get(url, timeout=20, headers=self.headers)
@@ -423,48 +296,26 @@ class SaraminCrawler:
                     time.sleep(0.4)
                     continue
                 soup = BeautifulSoup(resp.text, "html.parser")
-
-                content = self._find_content_container(soup)
-                self._strip_noise_nodes(content)
-
-                # 라벨 기반 (고용형태/급여)
-                emp = self._extract_label_value(content, ["고용형태", "근무형태"])
-                sal = self._extract_label_value(content, ["급여", "연봉", "보수", "급여조건"])
-
-                # 섹션 기반 (자격요건/복리후생)
-                req = self._extract_section_text(content, self.req_titles)
-                ben = self._extract_section_text(content, self.ben_titles)
-
-                # 요약 생성
-                req_sum = self._summarize_bullets(req or "", max_lines=5) if req else ""
-                ben_sum = self._summarize_bullets(ben or "", max_lines=4) if ben else ""
-
-                # 최종 결과
-                result.update({
-                    "employment_type": emp or "",
-                    "salary": sal or "",
-                    "requirements_raw": (req or "")[:8000],
-                    "benefits_raw": (ben or "")[:8000],
-                    "requirements_summary": req_sum,
-                    "benefits_summary": ben_sum
-                })
+                content_root = self._find_content_container(soup)
+                emp = self._extract_label_value(content_root, ["고용형태", "근무형태"]) or self._extract_label_value(soup, ["고용형태", "근무형태"])
+                sal = self._extract_label_value(content_root, ["급여", "연봉", "보수", "급여조건"]) or self._extract_label_value(soup, ["급여", "연봉", "보수", "급여조건"])
+                req = self._extract_section(content_root, ["자격요건", "지원자격", "필수요건", "우대사항", "우대조건", "모집요강", "담당업무", "직무내용"])
+                ben = self._extract_section(content_root, ["복리후생", "혜택", "지원제도", "회사복지", "근무환경"])
+                result["employment_type"] = emp or ""
+                result["salary"] = sal or ""
+                result["requirements_raw"] = req or ""
+                result["benefits_raw"] = ben or ""
                 return url, result
             except Exception:
                 time.sleep(0.6)
                 continue
-
-        return url, result  # 실패 시 기본값
+        return url, result
 
     def enrich_with_details(self, df: pd.DataFrame, max_workers: int = 8) -> pd.DataFrame:
-        """
-        멀티스레드로 상세페이지를 병렬 파싱하여 컬럼 추가 (원문 + 요약)
-        """
         if df.empty:
             return df
-
         urls = df["link"].fillna("").tolist()
         results_map: Dict[str, Dict[str, str]] = {}
-
         with requests.Session() as session:
             session.headers.update(self.headers)
             with ThreadPoolExecutor(max_workers=max_workers) as ex:
@@ -472,47 +323,29 @@ class SaraminCrawler:
                 for fut in as_completed(futures):
                     url, parsed = fut.result()
                     results_map[url] = parsed
-
-        for col in [
-            "employment_type", "salary",
-            "requirements_raw", "benefits_raw",
-            "requirements_summary", "benefits_summary"
-        ]:
+        for col in ["employment_type", "salary", "requirements_raw", "benefits_raw"]:
             df[col] = df["link"].map(lambda u: results_map.get(u, {}).get(col, ""))
-
+        df["requirements_summary"] = df["requirements_raw"].apply(lambda x: self._summarize(x, max_lines=5))
+        df["benefits_summary"] = df["benefits_raw"].apply(lambda x: self._summarize(x, max_lines=4))
         return df
 
-    # ----------------- HTML/메일 -----------------
-    def build_html_page(self, df: pd.DataFrame, out_html_path: str, page_title: str = "채용공고 결과(정제+요약)"):
+    def build_html_page(self, df: pd.DataFrame, out_html_path: str, page_title: str = "채용공고 결과(요약)"):
         out_path = Path(out_html_path)
         out_path.parent.mkdir(parents=True, exist_ok=True)
-
         cols = [
             'title','company','location','career','education','deadline',
-            'employment_type','salary',
-            'requirements_summary','benefits_summary',
-            'requirements_raw','benefits_raw',
+            'employment_type','salary','requirements_summary','benefits_summary',
             'link','crawled_at'
         ]
         exist_cols = [c for c in cols if c in df.columns]
         styled = df[exist_cols].rename(columns={
             'title':'제목','company':'회사','location':'위치','career':'경력',
-            'education':'학력','deadline':'마감일',
-            'employment_type':'고용형태','salary':'급여',
-            'requirements_summary':'자격요건(요약)','benefits_summary':'복리후생(요약)',
-            'requirements_raw':'자격요건(원문)','benefits_raw':'복리후생(원문)',
+            'education':'학력','deadline':'마감일','employment_type':'고용형태',
+            'salary':'급여','requirements_summary':'자격요건(요약)','benefits_summary':'복리후생(요약)',
             'link':'링크','crawled_at':'수집시각'
         }).copy()
-
-        # 링크 컬럼 HTML로 변환
         if '링크' in styled.columns:
             styled['링크'] = styled['링크'].apply(lambda x: f'<a href="{x}" target="_blank">바로가기</a>' if x else '')
-
-        # 줄바꿈 보존
-        for c in ['자격요건(원문)', '복리후생(원문)', '자격요건(요약)', '복리후생(요약)']:
-            if c in styled.columns:
-                styled[c] = styled[c].astype(str).str.replace("\n", "<br>")
-
         table_html = styled.to_html(index=False, escape=False, justify="center", border=0)
         html = f"""<!doctype html>
 <html lang="ko">
@@ -531,29 +364,23 @@ th {{ background:#fafafa; font-weight:700; }}
 tr:hover {{ background:#f4f9ff; }}
 a {{ text-decoration:none; color:#3498db; }}
 .meta {{ color:#888; font-size:13px; margin-top:20px; }}
-.small {{ color:#888; font-size:12px; }}
 </style>
 </head>
 <body>
 <div class="container">
   <h1>{page_title}</h1>
   <div class="desc">생성 시각: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}</div>
-  <p class="small">* 메일에는 요약 위주로 표시되며, 본 페이지에서는 원문과 요약이 함께 제공됩니다.</p>
   {table_html}
   <div class="meta">Powered by Python · 자동 크롤링 · Updated everyday</div>
 </div>
 </body>
 </html>"""
         out_path.write_text(html, encoding="utf-8")
-        print(f"🌐 HTML 생성: {out_path}")
         return str(out_path)
 
     def generate_html_table_for_email(self, df: pd.DataFrame, max_rows=10):
         subset = df.head(max_rows).fillna("")
-        cols = [
-            "title","company","location","employment_type","salary",
-            "requirements_summary","benefits_summary"
-        ]
+        cols = ["title","company","location","employment_type","salary","requirements_summary","benefits_summary"]
         exist = [c for c in cols if c in subset.columns]
         th_map = {
             "title":"제목","company":"회사","location":"위치",
@@ -573,20 +400,15 @@ a {{ text-decoration:none; color:#3498db; }}
         return html
 
     def send_email(self, df: pd.DataFrame, sender_email, app_password, receiver_email, pages_url: str):
-        """
-        CSV 첨부 없이 HTML 본문 + 전체 페이지 링크만 전송
-        """
         if df.empty:
             print("⚠ 전송할 공고가 없습니다.")
             return
-
-        subject = f"🎯 채용공고 자동 수집 결과(정제+요약) - {datetime.now().strftime('%Y-%m-%d')}"
+        subject = f"🎯 채용공고 자동 수집 결과(요약) - {datetime.now().strftime('%Y-%m-%d')}"
         html_table = self.generate_html_table_for_email(df, max_rows=10)
-
         html_body = f"""
         <html><head><meta charset="UTF-8"></head>
         <body style="font-family:'Apple SD Gothic Neo',Arial,sans-serif;">
-        <h1>🎯 채용공고 자동 수집 결과 (정제+요약)</h1>
+        <h1>🎯 채용공고 자동 수집 결과 (요약)</h1>
         <p>{datetime.now().strftime('%Y년 %m월 %d일')} 수집 완료</p>
         <div>
           <h2>📊 수집 현황</h2>
@@ -597,18 +419,16 @@ a {{ text-decoration:none; color:#3498db; }}
           {html_table}
         </div>
         <div style="text-align:center; margin:30px 0;">
-          <a href="{pages_url}" style="display:inline-block; padding:12px 20px; background:#3498db; color:#fff; text-decoration:none; border-radius:6px;">🌐 전체 공고 보기 (원문+요약)</a>
+          <a href="{pages_url}" style="display:inline-block; padding:12px 20px; background:#3498db; color:#fff; text-decoration:none; border-radius:6px;">🌐 전체 공고 보기</a>
         </div>
-        <p style="font-size:12px; color:#888;">🤖 CSV 파일은 포함되지 않았습니다. 전체 데이터는 상단 링크에서 확인 가능합니다.</p>
+        <p style="font-size:12px; color:#888;">🤖 Python 자동화 시스템이 수집했습니다</p>
         </body></html>
         """
-
         msg = MIMEMultipart('alternative')
         msg['From'] = sender_email
         msg['To'] = receiver_email
         msg['Subject'] = subject
         msg.attach(MIMEText(html_body, 'html', 'utf-8'))
-
         try:
             server = smtplib.SMTP('smtp.gmail.com', 587)
             server.starttls()
@@ -620,36 +440,29 @@ a {{ text-decoration:none; color:#3498db; }}
             print(f"❌ 이메일 전송 실패: {e}")
 
 
-# =========================================================
-# 실행부
-# =========================================================
 if __name__ == "__main__":
     crawler = SaraminCrawler()
-
-    # 1) 검색 → 기본정보 수집
     df = crawler.crawl_all(sleep_sec=0.6, page_limit=None)
     if df.empty:
         print("종료: 수집 데이터 없음")
         raise SystemExit(0)
-
-    # 2) 상세페이지 멀티스레드 파싱 (원문 정제 + 요약)
     print("🧩 상세페이지 파싱(멀티스레드) 시작...")
     df = crawler.enrich_with_details(df, max_workers=8)
     print("🧩 상세페이지 파싱 완료.")
 
-    # 3) CSV 저장 (로컬 백업/검증용: 메일에는 첨부하지 않음)
     ts = datetime.now().strftime('%Y%m%d_%H%M%S')
-    out_csv = f"saramin_results_raw_{ts}.csv"
-    df.to_csv(out_csv, index=False, encoding="utf-8-sig")
-    print(f"✅ CSV 저장 완료: {len(df)} rows → {out_csv}")
+    out_csv = f"saramin_results_{ts}.csv"
+    try:
+        df.to_csv(out_csv, index=False, encoding="utf-8-sig")
+        print(f"✅ CSV 저장 완료: {len(df)} rows → {out_csv}")
+    except Exception as e:
+        print(f"CSV 저장 실패: {e}")
 
-    # 4) HTML 저장 (GitHub Pages용: 원문+요약 모두 포함)
     docs_dir = Path("docs")
     html_path = docs_dir / "saramin_results_latest.html"
-    pages_url = "https://pkpjs.github.io/test/saramin_results_latest.html"  # 필요시 수정
+    pages_url = "https://pkpjs.github.io/test/saramin_results_latest.html"
     crawler.build_html_page(df, str(html_path))
 
-    # 5) 이메일 발송 (환경변수 사용; 미설정 시 기본 수신자는 example@gmail.com)
     EMAIL_SENDER   = os.environ.get("EMAIL_SENDER")
     EMAIL_PASSWORD = os.environ.get("EMAIL_APP_PASSWORD")
     EMAIL_RECEIVER = os.environ.get("EMAIL_RECEIVER", "example@gmail.com")
