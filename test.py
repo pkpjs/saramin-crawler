@@ -1,7 +1,6 @@
 import math
 import time
 import os
-import re
 import requests
 from bs4 import BeautifulSoup
 import pandas as pd
@@ -9,14 +8,8 @@ from datetime import datetime
 import smtplib
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
-from email.mime.application import MIMEApplication
 from pathlib import Path
-from concurrent.futures import ThreadPoolExecutor, as_completed
-from typing import Dict, Tuple, Optional, List
 
-# -------------------------------
-# Saramin Crawler (검색 + 상세 파싱: A모드=원문 정리)
-# -------------------------------
 class SaraminCrawler:
     def __init__(self):
         self.api_url = "https://www.saramin.co.kr/zf_user/search/get-recruit-list"
@@ -29,7 +22,7 @@ class SaraminCrawler:
             "Referer": "https://www.saramin.co.kr/zf_user/search",
             "X-Requested-With": "XMLHttpRequest",
         }
-        # 🔎 검색 조건(요청하신 조건)
+        # 🔎 검색 조건(요청 조건)
         self.params = {
             "searchType": "search",
             "loc_mcd": "106000,104000,105000,107000,110000,111000",   # 부산/대구/대전/울산/경남/경북
@@ -46,17 +39,6 @@ class SaraminCrawler:
             "recruitPageCount": 40,                                  # 페이지당 40개
             "recruitSort": "relation"                                # 관련도순
         }
-
-    # ---------- 유틸 ----------
-    @staticmethod
-    def _clean_text(text: str) -> str:
-        if not text:
-            return ""
-        t = text.replace("\r", "\n")
-        t = re.sub(r"\u00A0", " ", t)  # non-breaking space
-        t = re.sub(r"[ \t]+", " ", t)
-        t = re.sub(r"\n{2,}", "\n", t)
-        return t.strip()
 
     # ---------- 검색결과 파싱 ----------
     def _parse_jobs_from_innerHTML(self, inner_html):
@@ -155,172 +137,27 @@ class SaraminCrawler:
 
         return df
 
-    # ---------- 상세페이지 파싱 (A 모드: 원문) ----------
-    def _extract_label_value(self, soup: BeautifulSoup, labels: List[str]) -> Optional[str]:
-        """
-        상세페이지에서 '고용형태/급여' 같은 라벨-값 구조 추출 (dt/dd, th/td, strong/label 등 광범위 탐지)
-        """
-        # 후보 텍스트 노드 수집
-        nodes = soup.find_all(string=re.compile("|".join([re.escape(x) for x in labels])))
-        for node in nodes:
-            parent = node.parent
-            if not parent:
-                continue
-            # dt -> dd
-            if parent.name == "dt":
-                dd = parent.find_next_sibling("dd")
-                if dd:
-                    return self._clean_text(dd.get_text(" ", strip=True))
-            # th -> td
-            if parent.name == "th":
-                td = parent.find_next_sibling("td")
-                if td:
-                    return self._clean_text(td.get_text(" ", strip=True))
-            # strong/label 바로 다음 형제
-            sib = parent.find_next_sibling()
-            if sib and sib.name in ["dd", "td", "p", "div", "span"]:
-                val = self._clean_text(sib.get_text(" ", strip=True))
-                if val:
-                    return val
-            # 같은 줄에서 콜론 등으로 이어진 케이스
-            line = self._clean_text(parent.get_text(" ", strip=True))
-            for kw in labels:
-                if kw in line:
-                    after = line.split(kw, 1)[1].lstrip(": -—\t")
-                    if after:
-                        return self._clean_text(after)
-        return None
-
-    def _extract_section_raw(self, soup: BeautifulSoup, title_patterns: List[str]) -> Optional[str]:
-        """
-        '자격요건/지원자격/우대사항', '복리후생/혜택/지원제도' 같은 긴 섹션 원문 추출.
-        - 섹션 컨테이너를 최대한 넓게 잡아 li/p/dd/td/div/span 텍스트를 정리해 한 덩어리로 반환
-        """
-        regex = re.compile("|".join(title_patterns), re.IGNORECASE)
-        hits = soup.find_all(string=regex)
-        candidates = []
-
-        for node in hits:
-            box = node
-            # 상위로 2~3단계 올려 섹션 래퍼 추정
-            for _ in range(3):
-                if box and box.parent:
-                    box = box.parent
-            if not box:
-                continue
-
-            # 1차: 내부 요소 모으기
-            texts = []
-            for t in box.find_all(["li", "p", "dd", "td", "div", "span"]):
-                s = t.get_text(" ", strip=True)
-                if s:
-                    texts.append(s)
-
-            # 2차: 비었으면 인접 형제에서 일정 개수 추출 (마크업 다양성 대응)
-            if not texts:
-                sibs = []
-                for sib in box.find_all_next(["li", "p", "dd", "td", "div", "span"], limit=40):
-                    txt = sib.get_text(" ", strip=True)
-                    if txt:
-                        sibs.append(txt)
-                texts = sibs
-
-            if texts:
-                candidates.append("\n".join(texts))
-
-        if candidates:
-            raw = max(candidates, key=len)  # 가장 긴 것을 섹션으로 간주
-            return self._clean_text(raw[:8000])  # 안전한 길이 제한
-        return None
-
-    def _fetch_and_parse_detail(self, session: requests.Session, url: str) -> Tuple[str, Dict[str, str]]:
-        """
-        상세페이지 1건 요청+파싱. (세션/타임아웃/리트라이 내장)
-        반환: (url, {employment_type, salary, requirements_raw, benefits_raw})
-        """
-        result = {"employment_type": "", "salary": "", "requirements_raw": "", "benefits_raw": ""}
-        if not url:
-            return url, result
-
-        for _ in range(3):
-            try:
-                resp = session.get(url, timeout=20, headers=self.headers)
-                if resp.status_code != 200:
-                    time.sleep(0.4)
-                    continue
-                soup = BeautifulSoup(resp.text, "html.parser")
-
-                # 라벨 기반 (고용형태/급여)
-                emp = self._extract_label_value(soup, ["고용형태", "근무형태"])
-                sal = self._extract_label_value(soup, ["급여", "연봉", "보수", "급여조건"])
-
-                # 섹션 기반 (자격요건/복리후생)
-                req = self._extract_section_raw(
-                    soup,
-                    ["자격요건", "지원자격", "필수요건", "우대사항", "우대조건", "모집요강", "담당업무"]
-                )
-                ben = self._extract_section_raw(
-                    soup,
-                    ["복리후생", "혜택", "지원제도", "회사복지"]
-                )
-
-                result["employment_type"] = emp or ""
-                result["salary"]          = sal or ""
-                result["requirements_raw"] = req or ""
-                result["benefits_raw"]     = ben or ""
-                return url, result
-            except Exception:
-                time.sleep(0.6)
-                continue
-
-        return url, result  # 실패 시 빈 값
-
-    def enrich_with_details(self, df: pd.DataFrame, max_workers: int = 8) -> pd.DataFrame:
-        """
-        멀티스레드로 상세페이지를 병렬 파싱하여 컬럼 추가 (원문)
-        """
-        if df.empty:
-            return df
-
-        urls = df["link"].fillna("").tolist()
-        results_map: Dict[str, Dict[str, str]] = {}
-
-        with requests.Session() as session:
-            session.headers.update(self.headers)
-            with ThreadPoolExecutor(max_workers=max_workers) as ex:
-                futures = {ex.submit(self._fetch_and_parse_detail, session, url): url for url in urls}
-                for fut in as_completed(futures):
-                    url, parsed = fut.result()
-                    results_map[url] = parsed
-
-        for col in ["employment_type", "salary", "requirements_raw", "benefits_raw"]:
-            df[col] = df["link"].map(lambda u: results_map.get(u, {}).get(col, ""))
-
-        return df
-
     # ---------- HTML/이메일 ----------
-    def build_html_page(self, df: pd.DataFrame, out_html_path: str, page_title: str = "채용공고 결과(원문)"):
+    def build_html_page(self, df: pd.DataFrame, out_html_path: str, page_title: str = "채용공고 결과"):
+        """DataFrame을 HTML 페이지로 저장 (GitHub Pages 용)"""
         out_path = Path(out_html_path)
         out_path.parent.mkdir(parents=True, exist_ok=True)
 
-        cols = [
-            'title','company','location','career','education','deadline',
-            'employment_type','salary','requirements_raw','benefits_raw',
-            'link','crawled_at'
-        ]
-        exist_cols = [c for c in cols if c in df.columns]
-        styled = df[exist_cols].rename(columns={
-            'title':'제목','company':'회사','location':'위치','career':'경력',
-            'education':'학력','deadline':'마감일','employment_type':'고용형태',
-            'salary':'급여','requirements_raw':'자격요건(원문)','benefits_raw':'복리후생(원문)',
-            'link':'링크','crawled_at':'수집시각'
-        }).copy()
+        styled = (
+            df[['title','company','location','career','education','deadline','link','crawled_at']]
+            .rename(columns={
+                'title':'제목','company':'회사','location':'위치',
+                'career':'경력','education':'학력','deadline':'마감일',
+                'link':'링크','crawled_at':'수집시각'
+            })
+            .copy()
+        )
 
-        # 링크 컬럼 HTML로 변환
-        if '링크' in styled.columns:
-            styled['링크'] = styled['링크'].apply(lambda x: f'<a href="{x}" target="_blank">바로가기</a>' if x else '')
+        # 링크 컬럼 HTML로 변환 (새 창)
+        styled['링크'] = styled['링크'].apply(lambda x: f'<a href="{x}" target="_blank" rel="noopener">바로가기</a>' if x else '')
 
         table_html = styled.to_html(index=False, escape=False, justify="center", border=0)
+
         html = f"""<!doctype html>
 <html lang="ko">
 <head>
@@ -353,43 +190,42 @@ a {{ text-decoration:none; color:#3498db; }}
         print(f"🌐 HTML 생성: {out_path}")
         return str(out_path)
 
-    def generate_html_table_for_email(self, df: pd.DataFrame, max_rows=10):
-        subset = df.head(max_rows).fillna("")
-        cols = ["title","company","location","employment_type","salary","requirements_raw","benefits_raw"]
-        exist = [c for c in cols if c in subset.columns]
-        th_map = {
-            "title":"제목","company":"회사","location":"위치",
-            "employment_type":"고용형태","salary":"급여",
-            "requirements_raw":"자격요건(원문)","benefits_raw":"복리후생(원문)"
-        }
-        thead = "".join([f"<th>{th_map.get(c,c)}</th>" for c in exist])
+    def generate_html_table_for_email(self, jobs, max_rows=10):
+        """이메일 본문용 테이블 (상위 max_rows개)"""
+        subset = jobs[:max_rows]
         html = "<table style='width:100%; border-collapse:collapse; margin-top:20px;'>"
-        html += f"<tr style='background:#667eea; color:white;'>{thead}</tr>"
-        for _, row in subset.iterrows():
-            html += "<tr>"
-            for c in exist:
-                val = str(row.get(c, "")).replace("\n", "<br>")
-                html += f"<td style='padding:8px 6px; border-bottom:1px solid #eee;'>{val}</td>"
-            html += "</tr>"
+        html += "<tr style='background:#667eea; color:white;'><th>제목</th><th>회사</th><th>위치</th><th>경력</th><th>학력</th><th>마감일</th></tr>"
+        for job in subset:
+            html += (
+                f"<tr>"
+                f"<td>{job.get('title','')}</td>"
+                f"<td>{job.get('company','')}</td>"
+                f"<td>{job.get('location','')}</td>"
+                f"<td>{job.get('career','')}</td>"
+                f"<td>{job.get('education','')}</td>"
+                f"<td>{job.get('deadline','')}</td>"
+                f"</tr>"
+            )
         html += "</table>"
         return html
 
-    def send_email(self, df: pd.DataFrame, csv_path, sender_email, app_password, receiver_email, pages_url: str):
-        if df.empty:
+    def send_email(self, jobs, sender_email, app_password, receiver_email, pages_url: str):
+        """CSV 첨부 없이 HTML 본문만 전송"""
+        if not jobs:
             print("⚠ 전송할 공고가 없습니다.")
             return
 
-        subject = f"🎯 채용공고 자동 수집 결과(원문) - {datetime.now().strftime('%Y-%m-%d')}"
-        html_table = self.generate_html_table_for_email(df, max_rows=10)
+        subject = f"🎯 채용공고 자동 수집 결과 - {datetime.now().strftime('%Y-%m-%d')}"
+        html_table = self.generate_html_table_for_email(jobs, max_rows=10)
 
         html_body = f"""
         <html><head><meta charset="UTF-8"></head>
         <body style="font-family:'Apple SD Gothic Neo',Arial,sans-serif;">
-        <h1>🎯 채용공고 자동 수집 결과 (원문)</h1>
+        <h1>🎯 채용공고 자동 수집 결과</h1>
         <p>{datetime.now().strftime('%Y년 %m월 %d일')} 수집 완료</p>
         <div>
           <h2>📊 수집 현황</h2>
-          <p>• <strong>총 {len(df)}개</strong> 공고 발견</p>
+          <p>• <strong>총 {len(jobs)}개</strong> 공고 발견</p>
         </div>
         <div>
           <h2>🔥 주요 공고 미리보기 (최대 10개)</h2>
@@ -398,7 +234,7 @@ a {{ text-decoration:none; color:#3498db; }}
         <div style="text-align:center; margin:30px 0;">
           <a href="{pages_url}" style="display:inline-block; padding:12px 20px; background:#3498db; color:#fff; text-decoration:none; border-radius:6px;">🌐 전체 공고 보기</a>
         </div>
-        <p style="font-size:12px; color:#888;">🤖 Python 자동화 시스템이 수집했습니다</p>
+        <p style="font-size:12px; color:#888;">🤖 Python 자동화 시스템이 수집했습니다 (CSV 미첨부)</p>
         </body></html>
         """
 
@@ -408,68 +244,56 @@ a {{ text-decoration:none; color:#3498db; }}
         msg['Subject'] = subject
         msg.attach(MIMEText(html_body, 'html', 'utf-8'))
 
-        # CSV 첨부
-        if csv_path and os.path.exists(csv_path):
-            with open(csv_path, 'rb') as f:
-                part = MIMEApplication(f.read(), _subtype='csv')
-                part.add_header('Content-Disposition', 'attachment', filename=os.path.basename(csv_path))
-                msg.attach(part)
-
         try:
             server = smtplib.SMTP('smtp.gmail.com', 587)
             server.starttls()
             server.login(sender_email, app_password)
             server.send_message(msg)
             server.quit()
-            print("📧 이메일 전송 완료!")
+            print("📧 이메일 전송 완료! (CSV 첨부 없음)")
         except Exception as e:
             print(f"❌ 이메일 전송 실패: {e}")
 
-
-# -------------------------------
-# 실행부
-# -------------------------------
 if __name__ == "__main__":
     crawler = SaraminCrawler()
 
-    # 1) 검색 → 기본정보 수집
+    # 1) 크롤링
     df = crawler.crawl_all(sleep_sec=0.6, page_limit=None)
     if df.empty:
         print("종료: 수집 데이터 없음")
-        raise SystemExit(0)
+        exit()
 
-    # 2) 상세페이지 멀티스레드 파싱 (원문 수집)
-    print("🧩 상세페이지 파싱(멀티스레드) 시작...")
-    df = crawler.enrich_with_details(df, max_workers=8)
-    print("🧩 상세페이지 파싱 완료.")
-
-    # 3) CSV 저장
+    # 2) CSV 저장 (GitHub Pages 업데이트/백업용 - 메일에는 첨부하지 않음)
     ts = datetime.now().strftime('%Y%m%d_%H%M%S')
-    out_csv = f"saramin_results_raw_{ts}.csv"
+    out_csv = f"saramin_results_{ts}.csv"
     df.to_csv(out_csv, index=False, encoding="utf-8-sig")
     print(f"✅ CSV 저장 완료: {len(df)} rows → {out_csv}")
 
-    # 4) HTML 저장 (GitHub Pages용)
+    # 3) HTML 저장 (/docs 폴더)
     docs_dir = Path("docs")
     html_path = docs_dir / "saramin_results_latest.html"
-    pages_url = "https://pkpjs.github.io/test/saramin_results_latest.html"  # 필요시 수정
     crawler.build_html_page(df, str(html_path))
 
-    # 5) 이메일 발송 (환경변수 사용; 미설정 시 기본 수신자는 example@gmail.com)
-    EMAIL_SENDER   = os.environ.get("EMAIL_SENDER")
-    EMAIL_PASSWORD = os.environ.get("EMAIL_APP_PASSWORD")
-    EMAIL_RECEIVER = os.environ.get("EMAIL_RECEIVER", "example@gmail.com")
+    # 4) GitHub Pages URL (필요에 따라 수정)
+    pages_url = "https://pkpjs.github.io/test/saramin_results_latest.html"
 
-    if all([EMAIL_SENDER, EMAIL_PASSWORD, EMAIL_RECEIVER]):
-        crawler.send_email(
-            df=df,
-            csv_path=out_csv,
-            sender_email=EMAIL_SENDER,
-            app_password=EMAIL_PASSWORD,
-            receiver_email=EMAIL_RECEIVER,
-            pages_url=pages_url
-        )
-    else:
-        print("ℹ️ 이메일 발송 생략: EMAIL_SENDER / EMAIL_APP_PASSWORD (그리고 선택적으로 EMAIL_RECEIVER)가 필요합니다.")
+    # 5) 이메일 발송 설정 (환경변수 읽기)
+    EMAIL_SENDER   = os.environ.get("EMAIL_SENDER")
+    EMAIL_RECEIVER = os.environ.get("EMAIL_RECEIVER")
+    EMAIL_PASSWORD = os.environ.get("EMAIL_APP_PASSWORD")
+    if not all([EMAIL_SENDER, EMAIL_RECEIVER, EMAIL_PASSWORD]):
+        print("❌ 환경 변수(EMAIL_SENDER / EMAIL_RECEIVER / EMAIL_APP_PASSWORD)가 설정되지 않았습니다.")
+        print("🔔 GitHub Secrets 또는 실행 환경의 환경 변수 설정을 확인하세요.")
+        exit(1)
+
+    # 6) 이메일 발송 (CSV 첨부 없음)
+    jobs_list = df.to_dict(orient="records")
+    crawler.send_email(
+        jobs=jobs_list,
+        sender_email=EMAIL_SENDER,
+        app_password=EMAIL_PASSWORD,
+        receiver_email=EMAIL_RECEIVER,
+        pages_url=pages_url
+    )
 
     print(f"🔗 전체 공고 페이지 주소: {pages_url}")
