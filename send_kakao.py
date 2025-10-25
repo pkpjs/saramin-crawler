@@ -12,7 +12,6 @@ PAGES_URL     = os.getenv("PAGES_URL", "https://pkpjs.github.io/test/saramin_res
 HTML_PATH     = "docs/saramin_results_latest.html"
 SARAMIN_BASE  = "https://www.saramin.co.kr"
 
-# ✅ Token Refresh
 def refresh_access_token() -> str:
     url = "https://kauth.kakao.com/oauth/token"
     data = {
@@ -27,7 +26,6 @@ def refresh_access_token() -> str:
         raise RuntimeError(f"Access token refresh failed: {js}")
     return js["access_token"]
 
-# ✅ HTML Load
 def load_html_text() -> str:
     try:
         with open(HTML_PATH, "r", encoding="utf-8", errors="ignore") as f:
@@ -37,7 +35,6 @@ def load_html_text() -> str:
         r.raise_for_status()
         return r.text
 
-# ✅ Top10 추출
 def extract_top10():
     html = load_html_text()
     soup = BeautifulSoup(html, "lxml")
@@ -62,9 +59,9 @@ def extract_top10():
         return None
 
     i_link = idx("링크", "제목")
-    i_company = idx("회사", "company")
-    i_loc = idx("위치", "location")
-    i_job = idx("직무", "job")
+    i_company = idx("회사")
+    i_loc = idx("위치")
+    i_job = idx("직무")
     i_direct = idx("바로가기")
 
     items = []
@@ -83,7 +80,6 @@ def extract_top10():
             else:
                 title = tds[i_link].get_text(strip=True)
 
-        # "바로가기" 백업
         if not url and i_direct is not None and i_direct < len(tds):
             a2 = tds[i_direct].find("a", href=True)
             if a2:
@@ -100,69 +96,56 @@ def extract_top10():
 
         items.append({
             "title": title or "(제목 없음)",
-            "company": company,
-            "desc": desc,
+            "desc": desc or company,
             "url": url
         })
 
     return items[:10], total
 
-# ✅ 카카오 list 카드 전송
-def send_list_card(access_token: str, header_title: str, contents: list):
+def send_feed_card(access_token: str, title: str, desc: str, link_url: str):
+    url = "https://kapi.kakao.com/v2/api/talk/memo/default/send"
     template_object = {
-        "object_type": "list",
-        "header_title": header_title,
-        "header_link": {"web_url": PAGES_URL, "mobile_web_url": PAGES_URL},
-        "contents": [
-            {
-                "title": c["title"],
-                "description": (f"{c['company']} · {c['desc']}").strip(" ·"),
-                "link": {"web_url": c["url"], "mobile_web_url": c["url"]}
-            }
-            for c in contents
-        ],
+        "object_type": "feed",
+        "content": {
+            "title": title,
+            "description": desc,
+            "link": {"web_url": link_url, "mobile_web_url": link_url},
+        },
         "buttons": [
             {
-                "title": "전체 공고 보기",
-                "link": {"web_url": PAGES_URL, "mobile_web_url": PAGES_URL}
+                "title": "상세보기",
+                "link": {"web_url": link_url, "mobile_web_url": link_url}
             }
         ]
     }
 
-    r = requests.post(
-        "https://kapi.kakao.com/v2/api/talk/memo/default/send",
-        headers={
-            "Authorization": f"Bearer {access_token}",
-            "Content-Type": "application/x-www-form-urlencoded;charset=utf-8",
-        },
-        data={"template_object": json.dumps(template_object, ensure_ascii=False)},
-        timeout=20,
-    )
-    js = r.json()
-    print("📩 카카오 응답:", js)
-    if js.get("result_code") != 0:
-        raise RuntimeError(f"전송 실패: {js}")
-    return js
+    headers = {"Authorization": f"Bearer {access_token}"}
+    data = {"template_object": json.dumps(template_object, ensure_ascii=False)}
+    r = requests.post(url, headers=headers, data=data, timeout=20)
+    res = r.json()
 
-def chunk(lst, size):
-    for i in range(0, len(lst), size):
-        yield lst[i:i+size]
+    if res.get("result_code") != 0:
+        raise RuntimeError(f"카드 전송 실패: {res}")
+    return res
 
 def main():
     access_token = refresh_access_token()
     items, total = extract_top10()
+
     today = datetime.now(KST).strftime("%Y-%m-%d")
 
     if not items:
-        print("⚠ 데이터 없음")
+        print("❌ 데이터가 없습니다")
         return
 
-    batches = list(chunk(items, 5))
-    for idx, batch in enumerate(batches, start=1):
-        header = f"{today} 채용공고 TOP 10 ({(idx-1)*5+1}-{(idx-1)*5+len(batch)})"
-        send_list_card(access_token, header, batch)
+    # 🔥 TOP10 각 항목을 feed 카드로 전송
+    for i, item in enumerate(items, start=1):
+        display_title = f"{i}위 | {item['title']}"
+        display_desc = item["desc"] or "확인하기"
+        print(f"📨 Sending card {i}: {display_title}")
+        send_feed_card(access_token, display_title, display_desc, item["url"])
 
-    print("✅ 전송 완료! 총 {}개 항목 ({}회 전송)".format(len(items), len(batches)))
+    print(f"✅ 총 {len(items)}개의 카드를 발송 완료했습니다.")
 
 if __name__ == "__main__":
     main()
