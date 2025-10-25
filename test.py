@@ -137,7 +137,7 @@ class SaraminCrawler:
 
         return df
 
-    # ---------- HTML/이메일 ----------
+    # ---------- HTML ----------
     def build_html_page(self, df: pd.DataFrame, out_html_path: str, page_title: str = "채용공고 결과"):
         """DataFrame을 HTML 페이지로 저장 (GitHub Pages 용)"""
         out_path = Path(out_html_path)
@@ -190,6 +190,7 @@ a {{ text-decoration:none; color:#3498db; }}
         print(f"🌐 HTML 생성: {out_path}")
         return str(out_path)
 
+    # ---------- 이메일 ----------
     def generate_html_table_for_email(self, jobs, max_rows=10):
         """이메일 본문용 테이블 (상위 max_rows개)"""
         subset = jobs[:max_rows]
@@ -254,6 +255,32 @@ a {{ text-decoration:none; color:#3498db; }}
         except Exception as e:
             print(f"❌ 이메일 전송 실패: {e}")
 
+# ---------- CSV 자동 정리(최신 1개만 유지) ----------
+def clean_old_csv(directory: str = ".", prefix: str = "saramin_results_"):
+    """
+    최신 saramin_results_*.csv 파일 1개만 남기고 나머지 삭제
+    """
+    files = sorted(
+        [f for f in Path(directory).glob(f"{prefix}*.csv")],
+        key=lambda x: x.stat().st_mtime,
+        reverse=True
+    )
+
+    if len(files) <= 1:
+        print("✅ CSV가 1개 이하이므로 삭제할 것이 없습니다.")
+        return
+
+    latest = files[0]
+    old_files = files[1:]
+
+    print(f"🆕 최신 파일 유지: {latest.name}")
+    for f in old_files:
+        try:
+            os.remove(f)
+            print(f"🗑 삭제됨: {f.name}")
+        except Exception as e:
+            print(f"❌ 삭제 실패: {f.name}, 이유: {e}")
+
 if __name__ == "__main__":
     crawler = SaraminCrawler()
 
@@ -268,6 +295,9 @@ if __name__ == "__main__":
     out_csv = f"saramin_results_{ts}.csv"
     df.to_csv(out_csv, index=False, encoding="utf-8-sig")
     print(f"✅ CSV 저장 완료: {len(df)} rows → {out_csv}")
+
+    # 2-1) 🔥 이전 CSV 자동 정리 (최신 1개만 유지)
+    clean_old_csv(directory=".", prefix="saramin_results_")
 
     # 3) HTML 저장 (/docs 폴더)
     docs_dir = Path("docs")
