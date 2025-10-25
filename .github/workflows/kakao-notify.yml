@@ -33,7 +33,6 @@ jobs:
           KAKAO_REST_API_KEY: ${{ secrets.KAKAO_REST_API_KEY }}
           KAKAO_REDIRECT_URI: ${{ secrets.KAKAO_REDIRECT_URI }}
           KAKAO_REFRESH_TOKEN: ${{ secrets.KAKAO_REFRESH_TOKEN }}
-          # 선택: Access Token을 별도로 쓰고 싶으면 주입 (없어도 됨)
           KAKAO_ACCESS_TOKEN: ${{ secrets.KAKAO_ACCESS_TOKEN }}
           # GitHub Pages 결과 링크
           PAGES_URL: "https://pkpjs.github.io/test/saramin_results_latest.html"
