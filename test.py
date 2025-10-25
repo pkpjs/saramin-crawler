@@ -12,10 +12,10 @@ from email.mime.multipart import MIMEMultipart
 from email.mime.application import MIMEApplication
 from pathlib import Path
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from typing import Dict, Tuple, Optional, List, Set
+from typing import Dict, Tuple, Optional, List
 
 # -------------------------------
-# Saramin Crawler (검색 + 상세 파싱 + 요약)
+# Saramin Crawler (검색 + 상세 파싱: A모드=원문 정리)
 # -------------------------------
 class SaraminCrawler:
     def __init__(self):
@@ -47,50 +47,16 @@ class SaraminCrawler:
             "recruitSort": "relation"                                # 관련도순
         }
 
-        # -------- 요약용 사전(키워드) --------
-        # 기술/스택
-        self.skill_keywords = [
-            # 언어/프레임워크
-            "python","java","javascript","typescript","go","golang","c","c\\+\\+","c#","scala","ruby","kotlin","swift","php",
-            "node","node\\.js","react","react\\.js","vue","vue\\.js","angular","spring","springboot","django","flask",
-            ".net","asp\\.net","jpa","hibernate","mybatis",
-            # 데이터/플랫폼
-            "sql","mysql","postgresql","postgres","mariadb","mssql","oracle","redis","mongodb","elasticsearch","kafka",
-            "hadoop","spark","hive","presto","airflow","storm","kinesis","flink","redshift","bigquery","snowflake",
-            # 인프라/클라우드/도구
-            "aws","gcp","azure","linux","unix","docker","kubernetes","terraform","ansible","nginx","apache","jenkins",
-            "git","gitlab","github","ci/cd","cicd","prometheus","grafana","vault",
-            # ML/AI/보안
-            "pytorch","tensorflow","sklearn","scikit-learn","opencv","nlp","머신러닝","딥러닝","ai","ml","llm","rag",
-            "보안","침투테스트","모의해킹","waf","siem","ids","ips","sso","oauth","saml","kms","kms","kms",
-            # 기타
-            "etl","bi","spark streaming","airflow","metabase","tableau","looker","power bi","powerbi","superset"
-        ]
-        # 학력/자격증/연차/형태
-        self.req_patterns = {
-            "degree": [r"고졸", r"초대졸", r"전문학사", r"학사", r"대졸", r"석사", r"박사"],
-            "years": [r"(\d+)\s*년(?:\s*이상|\s*이하|\s*경력)?", r"경력\s*(\d+)\s*년"],
-            "newbie": [r"신입", r"경력\s*무관", r"무관"],
-            "certs": [
-                r"정보처리기사", r"정보보안기사", r"SQLD", r"ADsP", r"ADP", r"OCP", r"CCNA", r"TOEIC",
-                r"AWS[-\s]?SAA", r"AWS[-\s]?SAP", r"AWS[-\s]?DVA", r"GCP[-\s]?PCA", r"CKA", r"CKAD"
-            ],
-            "must_prefer": [r"필수", r"우대", r"우대사항", r"우대조건", r"가산점", r"가점"]
-        }
-        # 복리후생 키워드
-        self.benefit_keywords = [
-            "재택", "원격", "하이브리드", "유연근무", "탄력근무", "시차출근", "주4일", "주4.5일",
-            "연봉인상", "성과급", "인센티브", "스톡옵션", "복지포인트", "명절선물",
-            "중식", "석식", "야근식대", "식대", "간식", "사내카페",
-            "교통비", "통신비", "장비지원", "최신장비",
-            "4대보험", "퇴직금", "퇴직연금", "단체보험", "상해보험",
-            "연차", "반차", "리프레시", "장기근속", "휴가비",
-            "건강검진", "헬스", "사우나", "의료비",
-            "자기계발비", "교육비", "세미나", "스터디", "도서구입",
-            "기숙사", "기숙사제공", "사택", "주거지원",
-            "경조사", "경조금", "경조휴가", "출산", "육아휴직", "돌봄",
-            "사내동아리", "워라밸"
-        ]
+    # ---------- 유틸 ----------
+    @staticmethod
+    def _clean_text(text: str) -> str:
+        if not text:
+            return ""
+        t = text.replace("\r", "\n")
+        t = re.sub(r"\u00A0", " ", t)  # non-breaking space
+        t = re.sub(r"[ \t]+", " ", t)
+        t = re.sub(r"\n{2,}", "\n", t)
+        return t.strip()
 
     # ---------- 검색결과 파싱 ----------
     def _parse_jobs_from_innerHTML(self, inner_html):
@@ -189,69 +155,82 @@ class SaraminCrawler:
 
         return df
 
-    # ---------- 상세페이지 파싱 ----------
-    def _extract_label_block(self, soup: BeautifulSoup, label_keywords) -> Optional[str]:
+    # ---------- 상세페이지 파싱 (A 모드: 원문) ----------
+    def _extract_label_value(self, soup: BeautifulSoup, labels: List[str]) -> Optional[str]:
         """
-        상세페이지의 다양한 마크업에서 '고용형태/급여' 같은 라벨-값 구조 추출.
+        상세페이지에서 '고용형태/급여' 같은 라벨-값 구조 추출 (dt/dd, th/td, strong/label 등 광범위 탐지)
         """
-        text_nodes = soup.find_all(string=re.compile("|".join(label_keywords)))
-        for node in text_nodes:
-            text = node.strip()
+        # 후보 텍스트 노드 수집
+        nodes = soup.find_all(string=re.compile("|".join([re.escape(x) for x in labels])))
+        for node in nodes:
             parent = node.parent
-            # 1) dt -> dd
+            if not parent:
+                continue
+            # dt -> dd
             if parent.name == "dt":
                 dd = parent.find_next_sibling("dd")
                 if dd:
-                    return dd.get_text(" ", strip=True)
-            # 2) th -> td
+                    return self._clean_text(dd.get_text(" ", strip=True))
+            # th -> td
             if parent.name == "th":
                 td = parent.find_next_sibling("td")
                 if td:
-                    return td.get_text(" ", strip=True)
-            # 3) strong/label 등 -> 다음 형제
+                    return self._clean_text(td.get_text(" ", strip=True))
+            # strong/label 바로 다음 형제
             sib = parent.find_next_sibling()
             if sib and sib.name in ["dd", "td", "p", "div", "span"]:
-                val = sib.get_text(" ", strip=True)
+                val = self._clean_text(sib.get_text(" ", strip=True))
                 if val:
                     return val
-            # 4) 같은 줄 콜론/스페이스 분리
-            line = parent.get_text(" ", strip=True)
-            for kw in label_keywords:
+            # 같은 줄에서 콜론 등으로 이어진 케이스
+            line = self._clean_text(parent.get_text(" ", strip=True))
+            for kw in labels:
                 if kw in line:
-                    after = line.split(kw, 1)[1].strip(" :-—\t")
+                    after = line.split(kw, 1)[1].lstrip(": -—\t")
                     if after:
-                        return after
+                        return self._clean_text(after)
         return None
 
-    def _extract_long_section(self, soup: BeautifulSoup, keywords_regex: str) -> Optional[str]:
+    def _extract_section_raw(self, soup: BeautifulSoup, title_patterns: List[str]) -> Optional[str]:
         """
-        자격요건 / 복리후생 등 긴 텍스트 섹션을 최대한 넓게 긁어와 원문 반환.
+        '자격요건/지원자격/우대사항', '복리후생/혜택/지원제도' 같은 긴 섹션 원문 추출.
+        - 섹션 컨테이너를 최대한 넓게 잡아 li/p/dd/td/div/span 텍스트를 정리해 한 덩어리로 반환
         """
+        regex = re.compile("|".join(title_patterns), re.IGNORECASE)
+        hits = soup.find_all(string=regex)
         candidates = []
-        section_nodes = soup.find_all(string=re.compile(keywords_regex))
-        for node in section_nodes:
+
+        for node in hits:
             box = node
-            # 상위로 올려 섹션 컨테이너 추정
-            for _ in range(2):
+            # 상위로 2~3단계 올려 섹션 래퍼 추정
+            for _ in range(3):
                 if box and box.parent:
                     box = box.parent
             if not box:
                 continue
-            texts = [t.get_text(" ", strip=True)
-                     for t in box.find_all(["li", "p", "dd", "td", "div", "span"])
-                     if t.get_text(strip=True)]
+
+            # 1차: 내부 요소 모으기
+            texts = []
+            for t in box.find_all(["li", "p", "dd", "td", "div", "span"]):
+                s = t.get_text(" ", strip=True)
+                if s:
+                    texts.append(s)
+
+            # 2차: 비었으면 인접 형제에서 일정 개수 추출 (마크업 다양성 대응)
             if not texts:
                 sibs = []
-                for sib in box.find_all_next(["li", "p", "dd", "td", "div", "span"], limit=30):
+                for sib in box.find_all_next(["li", "p", "dd", "td", "div", "span"], limit=40):
                     txt = sib.get_text(" ", strip=True)
                     if txt:
                         sibs.append(txt)
                 texts = sibs
-            chunk = "\n".join(texts)
-            if chunk:
-                candidates.append(chunk)
+
+            if texts:
+                candidates.append("\n".join(texts))
+
         if candidates:
-            return max(candidates, key=len)[:6000]
+            raw = max(candidates, key=len)  # 가장 긴 것을 섹션으로 간주
+            return self._clean_text(raw[:8000])  # 안전한 길이 제한
         return None
 
     def _fetch_and_parse_detail(self, session: requests.Session, url: str) -> Tuple[str, Dict[str, str]]:
@@ -271,11 +250,19 @@ class SaraminCrawler:
                     continue
                 soup = BeautifulSoup(resp.text, "html.parser")
 
-                emp = self._extract_label_block(soup, ["고용형태"])
-                sal = self._extract_label_block(soup, ["급여", "연봉", "보수"])
+                # 라벨 기반 (고용형태/급여)
+                emp = self._extract_label_value(soup, ["고용형태", "근무형태"])
+                sal = self._extract_label_value(soup, ["급여", "연봉", "보수", "급여조건"])
 
-                req = self._extract_long_section(soup, r"(자격요건|필수요건|우대사항|우대조건)")
-                ben = self._extract_long_section(soup, r"(복리후생|혜택|지원제도)")
+                # 섹션 기반 (자격요건/복리후생)
+                req = self._extract_section_raw(
+                    soup,
+                    ["자격요건", "지원자격", "필수요건", "우대사항", "우대조건", "모집요강", "담당업무"]
+                )
+                ben = self._extract_section_raw(
+                    soup,
+                    ["복리후생", "혜택", "지원제도", "회사복지"]
+                )
 
                 result["employment_type"] = emp or ""
                 result["salary"]          = sal or ""
@@ -290,13 +277,13 @@ class SaraminCrawler:
 
     def enrich_with_details(self, df: pd.DataFrame, max_workers: int = 8) -> pd.DataFrame:
         """
-        멀티스레드로 상세페이지를 병렬 파싱하여 컬럼 추가
+        멀티스레드로 상세페이지를 병렬 파싱하여 컬럼 추가 (원문)
         """
         if df.empty:
             return df
 
         urls = df["link"].fillna("").tolist()
-        results_map = {}
+        results_map: Dict[str, Dict[str, str]] = {}
 
         with requests.Session() as session:
             session.headers.update(self.headers)
@@ -311,89 +298,21 @@ class SaraminCrawler:
 
         return df
 
-    # ---------- 요약(핵심 키워드 전부 추출) ----------
-    @staticmethod
-    def _normalize_text(t: str) -> str:
-        t = re.sub(r"[ \t]+", " ", t)
-        t = t.replace("\r", "\n")
-        t = re.sub(r"\n{2,}", "\n", t)
-        return t.strip()
-
-    def _extract_keywords(self, text: str, patterns: Dict[str, List[str]]) -> Set[str]:
-        """패턴 dict로 일치하는 항목 전부 추출"""
-        hits: Set[str] = set()
-        for _, regs in patterns.items():
-            for rgx in regs:
-                for m in re.findall(rgx, text, flags=re.IGNORECASE):
-                    if isinstance(m, tuple):
-                        m = " ".join([x for x in m if x])
-                    hits.add(str(m).strip())
-        return hits
-
-    def _extract_skills(self, text: str) -> Set[str]:
-        """스킬 키워드 전부 추출 (대소문자/구두점 무시)"""
-        t = text.lower()
-        # 구분자 정리
-        t = re.sub(r"[,/|·•・•\-\(\)\[\]{}]", " ", t)
-        found: Set[str] = set()
-        for kw in self.skill_keywords:
-            if re.search(rf"(?<![a-z0-9+]){kw}(?![a-z0-9+])", t, flags=re.IGNORECASE):
-                # 표기 통일
-                norm = kw.replace("\\+\\+", "C++").replace("\\.", ".")
-                norm = norm.upper() if norm in ["aws","gcp","sql","ci/cd","cicd","nlp","ai","ml"] else norm
-                # 보기 좋게 대문자화/타이틀화
-                if norm.lower() in ["python","java","javascript","typescript","golang","node","react","vue","angular","django","flask","spring","springboot"]:
-                    norm = norm.title().replace("Javascript","JavaScript").replace("Typescript","TypeScript")
-                found.add(norm)
-        return found
-
-    def summarize_requirements(self, raw: str) -> str:
-        if not raw:
-            return ""
-        text = self._normalize_text(raw)
-        skills  = self._extract_skills(text)
-        extras  = self._extract_keywords(text, self.req_patterns)
-
-        # '필수/우대' 문구는 그대로 추가
-        # 연차/학력/자격증/신입여부 등은 extras에 들어있음
-        # 보기좋게 정렬
-        out = sorted(skills | extras, key=lambda s: s.lower())
-        return " / ".join(out)
-
-    def summarize_benefits(self, raw: str) -> str:
-        if not raw:
-            return ""
-        text = self._normalize_text(raw)
-        # 키워드 전부 포함
-        hits: Set[str] = set()
-        for kw in self.benefit_keywords:
-            if re.search(kw, text, flags=re.IGNORECASE):
-                hits.add(kw)
-        out = sorted(hits, key=lambda s: s.lower())
-        return " / ".join(out)
-
-    def add_summaries(self, df: pd.DataFrame) -> pd.DataFrame:
-        if df.empty:
-            return df
-        df["requirements_summary"] = df["requirements_raw"].apply(self.summarize_requirements)
-        df["benefits_summary"]     = df["benefits_raw"].apply(self.summarize_benefits)
-        return df
-
     # ---------- HTML/이메일 ----------
-    def build_html_page(self, df: pd.DataFrame, out_html_path: str, page_title: str = "채용공고 결과(요약형)"):
+    def build_html_page(self, df: pd.DataFrame, out_html_path: str, page_title: str = "채용공고 결과(원문)"):
         out_path = Path(out_html_path)
         out_path.parent.mkdir(parents=True, exist_ok=True)
 
         cols = [
             'title','company','location','career','education','deadline',
-            'employment_type','salary','requirements_summary','benefits_summary',
+            'employment_type','salary','requirements_raw','benefits_raw',
             'link','crawled_at'
         ]
         exist_cols = [c for c in cols if c in df.columns]
         styled = df[exist_cols].rename(columns={
             'title':'제목','company':'회사','location':'위치','career':'경력',
             'education':'학력','deadline':'마감일','employment_type':'고용형태',
-            'salary':'급여','requirements_summary':'자격요건(요약)','benefits_summary':'복리후생(요약)',
+            'salary':'급여','requirements_raw':'자격요건(원문)','benefits_raw':'복리후생(원문)',
             'link':'링크','crawled_at':'수집시각'
         }).copy()
 
@@ -413,7 +332,7 @@ body {{ font-family: -apple-system, BlinkMacSystemFont, "Apple SD Gothic Neo", S
 .container {{ max-width:1200px; margin:0 auto; }}
 h1 {{ font-size:24px; margin-bottom:8px; }}
 .desc {{ color:#666; margin-bottom:20px; }}
-table {{ width:100%; border-collapse:collapse; }}
+table {{ width:100%; border-collapse:collapse; table-layout:fixed; word-break:break-word; }}
 th, td {{ border-bottom:1px solid #eee; padding:12px 8px; text-align:left; vertical-align:top; }}
 th {{ background:#fafafa; font-weight:700; }}
 tr:hover {{ background:#f4f9ff; }}
@@ -436,12 +355,12 @@ a {{ text-decoration:none; color:#3498db; }}
 
     def generate_html_table_for_email(self, df: pd.DataFrame, max_rows=10):
         subset = df.head(max_rows).fillna("")
-        cols = ["title","company","location","employment_type","salary","requirements_summary","benefits_summary"]
+        cols = ["title","company","location","employment_type","salary","requirements_raw","benefits_raw"]
         exist = [c for c in cols if c in subset.columns]
         th_map = {
             "title":"제목","company":"회사","location":"위치",
             "employment_type":"고용형태","salary":"급여",
-            "requirements_summary":"자격요건(요약)","benefits_summary":"복리후생(요약)"
+            "requirements_raw":"자격요건(원문)","benefits_raw":"복리후생(원문)"
         }
         thead = "".join([f"<th>{th_map.get(c,c)}</th>" for c in exist])
         html = "<table style='width:100%; border-collapse:collapse; margin-top:20px;'>"
@@ -449,7 +368,7 @@ a {{ text-decoration:none; color:#3498db; }}
         for _, row in subset.iterrows():
             html += "<tr>"
             for c in exist:
-                val = str(row.get(c, ""))
+                val = str(row.get(c, "")).replace("\n", "<br>")
                 html += f"<td style='padding:8px 6px; border-bottom:1px solid #eee;'>{val}</td>"
             html += "</tr>"
         html += "</table>"
@@ -460,13 +379,13 @@ a {{ text-decoration:none; color:#3498db; }}
             print("⚠ 전송할 공고가 없습니다.")
             return
 
-        subject = f"🎯 채용공고 자동 수집 결과(요약형) - {datetime.now().strftime('%Y-%m-%d')}"
+        subject = f"🎯 채용공고 자동 수집 결과(원문) - {datetime.now().strftime('%Y-%m-%d')}"
         html_table = self.generate_html_table_for_email(df, max_rows=10)
 
         html_body = f"""
         <html><head><meta charset="UTF-8"></head>
         <body style="font-family:'Apple SD Gothic Neo',Arial,sans-serif;">
-        <h1>🎯 채용공고 자동 수집 결과 (요약형)</h1>
+        <h1>🎯 채용공고 자동 수집 결과 (원문)</h1>
         <p>{datetime.now().strftime('%Y년 %m월 %d일')} 수집 완료</p>
         <div>
           <h2>📊 수집 현황</h2>
@@ -524,22 +443,19 @@ if __name__ == "__main__":
     df = crawler.enrich_with_details(df, max_workers=8)
     print("🧩 상세페이지 파싱 완료.")
 
-    # 3) 요약 컬럼 생성 (핵심 키워드 전부)
-    df = crawler.add_summaries(df)
-
-    # 4) CSV 저장
+    # 3) CSV 저장
     ts = datetime.now().strftime('%Y%m%d_%H%M%S')
-    out_csv = f"saramin_results_summary_{ts}.csv"
+    out_csv = f"saramin_results_raw_{ts}.csv"
     df.to_csv(out_csv, index=False, encoding="utf-8-sig")
     print(f"✅ CSV 저장 완료: {len(df)} rows → {out_csv}")
 
-    # 5) HTML 저장 (GitHub Pages용)
+    # 4) HTML 저장 (GitHub Pages용)
     docs_dir = Path("docs")
     html_path = docs_dir / "saramin_results_latest.html"
     pages_url = "https://pkpjs.github.io/test/saramin_results_latest.html"  # 필요시 수정
     crawler.build_html_page(df, str(html_path))
 
-    # 6) 이메일 발송 (환경변수 사용; 미설정 시 기본 수신자는 example@gmail.com)
+    # 5) 이메일 발송 (환경변수 사용; 미설정 시 기본 수신자는 example@gmail.com)
     EMAIL_SENDER   = os.environ.get("EMAIL_SENDER")
     EMAIL_PASSWORD = os.environ.get("EMAIL_APP_PASSWORD")
     EMAIL_RECEIVER = os.environ.get("EMAIL_RECEIVER", "example@gmail.com")
