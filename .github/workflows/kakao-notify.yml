@@ -1,15 +1,11 @@
 name: Kakao Notify
 
 on:
-  schedule:
-    # 매일 오전 9시 KST == 00:00 UTC
-    - cron: "0 0 * * *"
-  workflow_dispatch:
-  # ✅ Saramin 크롤러 완료 직후 자동 실행
   workflow_run:
-    workflows: ["Run Saramin Crawler"]   # ✅ 정확한 워크플로 이름
+    workflows: ["Run Saramin Crawler"]  # ✅ 크롤러 끝났을 때만 실행
     types:
       - completed
+  workflow_dispatch:  # ✅ 수동 실행 옵션은 유지 (원하면 메시지 테스트 가능)
 
 jobs:
   notify:
