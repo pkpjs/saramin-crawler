@@ -1,136 +1,208 @@
-import os
-import json
-import requests
+# -*- coding: utf-8 -*-
+import os, json, requests
 from bs4 import BeautifulSoup
+from urllib.parse import urljoin
 from datetime import datetime, timedelta, timezone
 
 KST = timezone(timedelta(hours=9))
 
-# ✅ GitHub Secrets or 환경 변수
 REST_API_KEY  = os.getenv("KAKAO_REST_API_KEY")
 REFRESH_TOKEN = os.getenv("KAKAO_REFRESH_TOKEN")
 PAGES_URL     = os.getenv("PAGES_URL", "https://pkpjs.github.io/test/saramin_results_latest.html")
 HTML_PATH     = "docs/saramin_results_latest.html"
 
-# ✅ Access Token 갱신
+SARAMIN_BASE = "https://www.saramin.co.kr"
+
 def refresh_access_token() -> str:
+    """Refresh Token -> Access Token"""
     url = "https://kauth.kakao.com/oauth/token"
     data = {
         "grant_type": "refresh_token",
         "client_id": REST_API_KEY,
         "refresh_token": REFRESH_TOKEN,
     }
-    resp = requests.post(url, data=data, timeout=20)
-    resp.raise_for_status()
-    js = resp.json()
-    if "access_token" not in js:
-        raise RuntimeError(f"Access Token refresh 실패: {js}")
-    print("🔄 Access Token 자동 갱신 완료")
-    return js["access_token"]
+    r = requests.post(url, data=data, timeout=20)
+    r.raise_for_status()
+    j = r.json()
+    if "access_token" not in j:
+        raise RuntimeError(f"Access token refresh failed: {j}")
+    return j["access_token"]
 
-# ✅ HTML 파일에서 TOP10 파싱
-def parse_top10_from_html():
+def load_html_text() -> str:
+    """로컬 HTML 우선, 없으면 Pages에서 가져오기"""
     try:
         with open(HTML_PATH, "r", encoding="utf-8", errors="ignore") as f:
-            html = f.read()
+            return f.read()
     except FileNotFoundError:
-        print("⚠ HTML 파일을 로컬에서 찾지 못함. GitHub Pages에서 직접 파싱 시도")
-        html = requests.get(PAGES_URL, timeout=20).text
+        resp = requests.get(PAGES_URL, timeout=20)
+        resp.raise_for_status()
+        return resp.text
 
+def extract_top10():
+    """
+    HTML 표(DataFrame.to_html 유사)에서 상위 10개 추출
+    - 컬럼: 제목/회사/위치/직무(있으면) 탐색
+    - 제목 칸의 <a href> 추출(상대경로 -> 절대경로 보정)
+    """
+    html = load_html_text()
     soup = BeautifulSoup(html, "lxml")
+
     table = soup.find("table")
     if not table:
         return [], 0
 
+    # 헤더
     headers = [th.get_text(strip=True) for th in table.select("thead tr th")]
     if not headers:
-        first_row = table.find("tr")
-        headers = [th.get_text(strip=True) for th in first_row.find_all(["th","td"])]
+        first_tr = table.find("tr")
+        if first_tr:
+            headers = [th.get_text(strip=True) for th in first_tr.find_all(["th", "td"])]
 
+    # 행
     rows = table.select("tbody tr")
     if not rows:
-        rows = table.find_all("tr")[1:]
+        rows = table.find_all("tr")[1:]  # 첫 tr 헤더 가정
 
     total = len(rows)
 
-    def get_idx(name):
-        try:
-            return headers.index(name)
-        except:
-            return None
+    # 컬럼 인덱스 헬퍼
+    def idx(*names):
+        for n in names:
+            if n in headers:
+                return headers.index(n)
+        return None
 
-    idx_title   = get_idx("제목") or get_idx("title")
-    idx_company = get_idx("회사") or get_idx("company")
-    idx_loc     = get_idx("위치") or get_idx("location")
-    idx_job     = get_idx("직무") or get_idx("job")
+    i_title   = idx("제목", "title")
+    i_company = idx("회사", "company")
+    i_loc     = idx("위치", "location")
+    i_job     = idx("직무", "job")
 
-    top_items = []
+    items = []
     for tr in rows[:10]:
         tds = tr.find_all("td")
         if not tds:
             continue
-        title = tds[idx_title].get_text(strip=True) if idx_title is not None else ""
-        comp  = tds[idx_company].get_text(strip=True) if idx_company is not None else ""
-        loc   = tds[idx_loc].get_text(strip=True) if idx_loc is not None else ""
-        job   = tds[idx_job].get_text(strip=True) if idx_job is not None else ""
 
-        desc = f"{loc} | {job}" if job else loc
-        top_items.append((title, comp, desc))
+        # 제목/URL
+        title = ""
+        url = ""
+        if i_title is not None and i_title < len(tds):
+            title_cell = tds[i_title]
+            a = title_cell.find("a", href=True)
+            if a:
+                title = a.get_text(strip=True)
+                href = a["href"].strip()
+                # 절대/상대 경로 모두 처리
+                if href.startswith("http://") or href.startswith("https://"):
+                    url = href
+                else:
+                    url = urljoin(SARAMIN_BASE, href)
+            else:
+                title = title_cell.get_text(strip=True)
 
-    return top_items, total
+        company = tds[i_company].get_text(strip=True) if i_company is not None and i_company < len(tds) else ""
+        location = tds[i_loc].get_text(strip=True) if i_loc is not None and i_loc < len(tds) else ""
+        job = tds[i_job].get_text(strip=True) if i_job is not None and i_job < len(tds) else ""
 
-# ✅ 카드 스타일 텍스트 구성
-def build_card_message(date_str, total, top_items):
-    lines = []
-    lines.append(f"📌 [{date_str} 채용공고 TOP {len(top_items)} 요약]")
-    lines.append(f"총 {total}개 공고가 업데이트되었습니다.\n")
+        # 카드 설명
+        desc = " | ".join([t for t in [location, job] if t])
 
-    for i, (title, comp, desc) in enumerate(top_items, start=1):
-        lines.append("┌───────────────────────")
-        lines.append(f"│ {i}위  {title}")
-        if comp:
-            lines.append(f"│ 🏢 {comp}")
-        if desc:
-            lines.append(f"│ 📍 {desc}")
-        lines.append("└───────────────────────")
+        # URL 없으면 전체보기로 폴백
+        if not url:
+            url = PAGES_URL
 
-    lines.append("\n👇 아래 버튼을 눌러 전체 공고를 확인하세요.")
-    return "\n".join(lines)
+        # 제목/회사 비어있을 때 대비
+        title = title or "채용공고"
+        company = company or ""
 
-# ✅ 카카오톡 전송 (템플릿 없이 기본 API)
-def send_kakao_text(access_token, text, link_url):
-    url = "https://kapi.kakao.com/v2/api/talk/memo/default/send"
+        items.append({
+            "title": title,
+            "company": company,
+            "desc": desc,
+            "url": url
+        })
+
+    return items[:10], total
+
+def send_list_card(access_token: str, header_title: str, contents: list, footer_button_title: str = "전체 공고 보기"):
+    """
+    카카오 기본 list 카드 전송(템플릿ID 불필요)
+    contents: [{title, desc, url}]
+    주의: 카카오 기본 list는 항목 수 제한이 있을 수 있으므로 5개 내외로 배치 권장
+    """
     template_object = {
-        "object_type": "text",
-        "text": text,
-        "link": {"web_url": link_url, "mobile_web_url": link_url},
-        "button_title": "전체 공고 보기"
+        "object_type": "list",
+        "header_title": header_title,
+        "header_link": {
+            "web_url": PAGES_URL,
+            "mobile_web_url": PAGES_URL
+        },
+        "contents": [
+            {
+                "title": c["title"] if c.get("company") == "" else f"{c['title']}",
+                "description": (f"{c.get('company', '')} · {c.get('desc', '')}").strip(" ·"),
+                "link": {
+                    "web_url": c["url"],
+                    "mobile_web_url": c["url"]
+                }
+            }
+            for c in contents
+        ],
+        "buttons": [
+            {
+                "title": footer_button_title,
+                "link": {"web_url": PAGES_URL, "mobile_web_url": PAGES_URL}
+            }
+        ]
     }
-    headers = {"Authorization": f"Bearer {access_token}"}
+
+    url = "https://kapi.kakao.com/v2/api/talk/memo/default/send"
+    headers = {
+        "Authorization": f"Bearer {access_token}",
+        "Content-Type": "application/x-www-form-urlencoded;charset=UTF-8",
+    }
     data = {"template_object": json.dumps(template_object, ensure_ascii=False)}
+    r = requests.post(url, headers=headers, data=data, timeout=20)
+    try:
+        js = r.json()
+    except Exception:
+        raise RuntimeError(f"Kakao send error: {r.status_code} {r.text}")
 
-    resp = requests.post(url, headers=headers, data=data, timeout=20)
-    result = resp.json()
-    print("📩 카카오 응답:", result)
+    if js.get("result_code") != 0:
+        raise RuntimeError(f"Kakao send failed: {js}")
+    return js
 
-    if result.get("result_code") == 0:
-        print("✅ 메시지 전송 성공!")
-    else:
-        raise RuntimeError(f"메시지 전송 실패: {result}")
+def chunk(lst, size):
+    for i in range(0, len(lst), size):
+        yield lst[i:i+size]
 
-# ✅ 메인 실행
 def main():
     access_token = refresh_access_token()
-    top_items, total = parse_top10_from_html()
-    today_str = datetime.now(KST).strftime("%Y-%m-%d")
 
-    if not top_items:
-        print("⚠ TOP10 데이터를 찾지 못함. 전체 링크만 보냅니다.")
-        text = f"[{today_str} 채용공고 요약]\n데이터를 불러올 수 없습니다.\n👇 전체보기: {PAGES_URL}"
-    else:
-        text = build_card_message(today_str, total, top_items)
+    items, total = extract_top10()
+    today = datetime.now(KST).strftime("%Y-%m-%d")
+    if not items:
+        # 아무 것도 못 뽑으면 안내 텍스트만
+        template_object = {
+            "object_type": "text",
+            "text": f"[{today}] 채용 데이터를 불러오지 못했어요.\n아래 버튼으로 전체 목록을 확인하세요.",
+            "link": {"web_url": PAGES_URL, "mobile_web_url": PAGES_URL},
+            "button_title": "전체 공고 보기"
+        }
+        url = "https://kapi.kakao.com/v2/api/talk/memo/default/send"
+        headers = {"Authorization": f"Bearer {access_token}"}
+        data = {"template_object": json.dumps(template_object, ensure_ascii=False)}
+        r = requests.post(url, headers=headers, data=data, timeout=20)
+        print("Fallback sent:", r.text)
+        return
 
-    send_kakao_text(access_token, text, PAGES_URL)
+    # 최대 10개 → 5개씩 2회 전송(캐러셀 느낌)
+    batches = list(chunk(items, 5))
+    for idx, batch in enumerate(batches, start=1):
+        header = f"{today} 채용공고 TOP {len(items)} (#{(idx-1)*5+1}–#{(idx-1)*5+len(batch)})"
+        send_list_card(access_token, header, batch)
+
+    print("✅ 전송 완료: list 카드 {}건(총 {}개 항목)".format(len(batches), len(items)))
 
 if __name__ == "__main__":
     main()
