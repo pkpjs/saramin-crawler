@@ -10,7 +10,7 @@ REST_API_KEY  = os.getenv("KAKAO_REST_API_KEY")
 REFRESH_TOKEN = os.getenv("KAKAO_REFRESH_TOKEN")
 PAGES_URL     = os.getenv("PAGES_URL", "https://pkpjs.github.io/test/saramin_results_latest.html")
 HTML_PATH     = "docs/saramin_results_latest.html"
-STATE_PATH    = "docs/last_rec_ids.json"  # 신규 판정용 rec_idx 저장
+STATE_PATH    = "docs/last_rec_ids.json"
 SARAMIN_BASE  = "https://www.saramin.co.kr"
 
 # ===== 점수 기준 =====
@@ -58,8 +58,7 @@ def parse_deadline(text: str):
     if any(word in t for word in ["상시", "수시", "채용시"]):
         return None
     m = re.search(r"(\d{1,2})[./-](\d{1,2})", t) or re.search(r"(\d{1,2})월\s*(\d{1,2})일", t)
-    if not m:
-        return None
+    if not m: return None
     month, day = int(m.group(1)), int(m.group(2))
     now = datetime.now(KST)
     year = now.year
@@ -105,7 +104,6 @@ def extract_items():
         if not tds:
             continue
 
-        # 제목 & URL
         title, url = "", ""
         if i_title is not None and i_title < len(tds):
             a = tds[i_title].find("a", href=True)
@@ -114,7 +112,6 @@ def extract_items():
                 href = a["href"].strip()
                 url = href if href.startswith("http") else urljoin(SARAMIN_BASE, href)
 
-        # 바로가기 URL
         if not url and i_direct is not None and i_direct < len(tds):
             a2 = tds[i_direct].find("a", href=True)
             if a2:
@@ -123,7 +120,7 @@ def extract_items():
 
         company = tds[i_company].get_text(strip=True) if i_company is not None else ""
         loc     = tds[i_loc].get_text(strip=True) if i_loc is not None else ""
-        job     = tds[i_job].get_text(strip=True) if i_job is not None else ""
+        job     = tds[i_job].get_text(strip=True) if i_job is not None else "(직무정보없음)"
         deadraw = tds[i_dead].get_text(strip=True) if i_dead is not None else ""
         salary  = tds[i_salary].get_text(strip=True) if i_salary is not None else ""
         rec_idx = None
@@ -227,10 +224,10 @@ def main():
             f"총 {total}개 중 선별된 상위 공고입니다.\n"]
 
     for idx, item in enumerate(top5, start=1):
-        text.append(f"{idx}위 ({item['score']}점) | {item['company']} | {item['location']}")
+        text.append(f"{idx}위 ({item['score']}점) | {item['company']} / {item['job']} | {item['location']}")
         text.append(f"🔗 {item['url']}\n")
 
-    text.append(f"👇 전체 보기: {PAGES_URL}")
+    text.append(f"👇 전체 공고 보기:\n{PAGES_URL}")
     final_message = "\n".join(text)
 
     send_text_message(access_token, final_message)
