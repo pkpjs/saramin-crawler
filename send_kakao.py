@@ -226,7 +226,7 @@ def send_text(access_token: str, text: str):
     cur_len = 0
     for line in text.splitlines():
         add = len(line) + 1
-        if cur_len + add > 900: # 카카오 메시지 최대 길이 제한 고려
+        if cur_len + add > 90000: # 카카오 메시지 최대 길이 제한 고려
             chunks.append("\n".join(buf))
             buf, cur_len = [], 0
         buf.append(line)
