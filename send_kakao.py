@@ -48,22 +48,18 @@ def load_html_text() -> str:
 
 # ===== 마감일 파싱/표시 =====
 def parse_deadline(text: str):
-    """표기에서 날짜 추출 -> datetime(KST) 또는 None(수시/상시/채용시)"""
     if not text:
         return None
     t = text.strip()
     if any(k in t for k in ["상시","수시","채용시","상시채용","수시채용"]):
         return None
-    # "~ 11/14(금)", "11.14", "11-14", "11월 14일" 등
     m = re.search(r'(\d{1,2})\s*[./-]\s*(\d{1,2})', t) or re.search(r'(\d{1,2})\s*월\s*(\d{1,2})\s*일', t)
     if not m:
-        # "오늘마감/내일마감/18시마감" 등은 구체날짜가 없으니 None 처리
         return None
     month, day = int(m.group(1)), int(m.group(2))
     now = datetime.now(KST)
     year = now.year
     d = datetime(year, month, day, tzinfo=KST)
-    # 페이지 생성시점상 전년도 표시 가능성 대비 보정
     if d < now - timedelta(days=180):
         d = datetime(year+1, month, day, tzinfo=KST)
     return d
@@ -73,10 +69,6 @@ def days_to_deadline(d):
     return (d.date() - datetime.now(KST).date()).days
 
 def format_deadline_display(deadline_dt, raw_text: str) -> str:
-    """
-    출력용: "마감 11/14 (D-3)" / "오늘마감" / "내일마감" / "상시채용" 등
-    raw_text에 '오늘마감/내일마감/18시마감' 등이 있으면 그걸 우선.
-    """
     t = (raw_text or "").strip()
     low = t.replace(" ", "").lower()
     if any(k in low for k in ["오늘마감","today"]): return "오늘마감"
@@ -85,31 +77,21 @@ def format_deadline_display(deadline_dt, raw_text: str) -> str:
     if deadline_dt:
         dday = days_to_deadline(deadline_dt)
         mmdd = deadline_dt.strftime("%m/%d")
-        # dday가 음수면 "마감"으로 표기
         if dday is not None:
-            if dday < 0:
-                return f"마감 {mmdd} (D+{abs(dday)})"
-            elif dday == 0:
-                return f"마감 {mmdd} (D-0)"
-            else:
-                return f"마감 {mmdd} (D-{dday})"
+            if dday < 0:  return f"마감 {mmdd} (D+{abs(dday)})"
+            if dday == 0: return f"마감 {mmdd} (D-0)"
+            return f"마감 {mmdd} (D-{dday})"
         return f"마감 {mmdd}"
-    # 날짜 파싱 실패 시 원문 fallback
     return t or ""
 
 # ===== 공고 추출 =====
 def extract_items():
-    """
-    표 컬럼 가정:
-    제목/링크 | 회사 | 위치 | 경력 | 학력 | 마감일 | 바로가기 | (연봉/급여 옵션)
-    """
     html = load_html_text()
     soup = BeautifulSoup(html, "lxml")
     table = soup.find("table")
     if not table:
         return [], 0
 
-    # 헤더 인덱스
     headers = [th.get_text(strip=True) for th in table.find_all("th")]
     rows = table.find_all("tr")[1:]
     total = len(rows)
@@ -151,7 +133,7 @@ def extract_items():
         loc     = tds[i_loc].get_text(strip=True)     if i_loc     is not None and i_loc     < len(tds) else ""
         job     = tds[i_job].get_text(strip=True)     if i_job     is not None and i_job     < len(tds) else "(직무정보없음)"
         deadraw = tds[i_dead].get_text(strip=True)    if i_dead    is not None and i_dead    < len(tds) else ""
-        salary  = tds[i_salary].get_text(strip=True)  if i_salary  is not None and i_salary  < len(tds) else ""
+        salary  = tds[i_salary].get_text(strip=True)  if i_salary  is not None and i_salary < len(tds) else ""
 
         rec_idx = None
         if url:
@@ -170,7 +152,7 @@ def extract_items():
             "deadline": deadline_dt,
             "deadline_disp": deadline_disp,
             "salary": salary,
-            "url": url or PAGES_URL,
+            "url": url or PAGES_URL,  # ✅ 여기 저장된 값이 실제 공고 링크
             "rec_idx": rec_idx
         })
     return items, total
@@ -198,7 +180,7 @@ def deadline_score(deadline):
     if d is None: return DEADLINE_NONE
     if d <= 3:    return DEADLINE_IMMINENT_3D
     if d <= 7:    return DEADLINE_IMMINENT_7D
-    return max(0, 30 - min(d, 30))  # 멀수록 낮아짐 (최대 30 → 0)
+    return max(0, 30 - min(d, 30))
 
 def freshness_score(item, last_ids: set):
     rec = item.get("rec_idx")
@@ -214,7 +196,7 @@ def salary_score(text: str):
     if not text: return 0
     if "협의" in text: return 0
     nums = [int(x) for x in re.findall(r'\d{3,4}', text)]
-    if nums and max(nums) >= 3500:  # 3500만 이상 언급 시 소폭 가산
+    if nums and max(nums) >= 3500:
         return SALARY_GOOD
     return 0
 
@@ -232,19 +214,13 @@ def rank_top(items, k=5):
         it["score"] = score_item(it, last_ids)
     items.sort(key=lambda x: x["score"], reverse=True)
     topk = items[:k]
-    save_current_rec_ids(items)  # 이번 회차 기록
+    save_current_rec_ids(items)
     return topk
 
-# ===== 카카오 전송 (길이 초과 시 자동 분할) =====
+# ===== 카카오 전송 =====
 def send_text(access_token: str, text: str):
-    """
-    카카오 default 텍스트 템플릿 사용.
-    텍스트 길이 제한(대략 1000자 근처)을 고려해 900자 단위로 분할 전송.
-    """
     url = "https://kapi.kakao.com/v2/api/talk/memo/default/send"
     headers = {"Authorization": f"Bearer {access_token}"}
-
-    # 900자 단위로 분할
     chunks = []
     buf = []
     cur_len = 0
@@ -288,11 +264,15 @@ def main():
     lines.append(f"📅 {today} 기준 AI 추천 TOP 5 채용공고")
     lines.append(f"총 {total}개 중 선별된 상위 공고입니다.\n")
 
-    # 본문(1~5위): "1위 (92점) | 회사 / 직무 | 지역 | 마감 11/14 (D-3)" + 실제 URL
     for i, it in enumerate(top5, start=1):
-        title_line = f"{i}위 ({it['score']}점) | {it['company']} / {it['job']} | {it['location']} | {it['deadline_disp']}".strip().rstrip("|")
+        title_line = f"{i}위 ({it['score']}점) | {it['company']} / {it['job']} | {it['location']} | {it['deadline_disp']}"
         lines.append(title_line)
-        lines.append(f"🔗 {it['url']}\n")
+
+        # ✅ 여기 수정됨: 실제 공고 URL을 대표 링크로 출력
+        real_link = it.get('url')
+        if not real_link and it.get('rec_idx'):
+            real_link = f"https://www.saramin.co.kr/zf_user/jobs/relay/view?rec_idx={it['rec_idx']}"
+        lines.append(f"🔗 {real_link}\n")
 
     lines.append(f"👇 전체 공고 보기:\n{PAGES_URL}")
 
