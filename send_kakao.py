@@ -6,22 +6,22 @@ from datetime import datetime, timedelta, timezone
 
 # ===== 기본 설정 =====
 KST = timezone(timedelta(hours=9))
-REST_API_KEY  = os.getenv("KAKAO_REST_API_KEY")
+REST_API_KEY = os.getenv("KAKAO_REST_API_KEY")
 REFRESH_TOKEN = os.getenv("KAKAO_REFRESH_TOKEN")
-PAGES_URL     = os.getenv("PAGES_URL", "https://pkpjs.github.io/test/saramin_results_latest.html")
-HTML_PATH     = "docs/saramin_results_latest.html"
-STATE_PATH    = "docs/last_rec_ids.json"   # 신규 감지용 저장 파일
-SARAMIN_BASE  = "https://www.saramin.co.kr"
+PAGES_URL = os.getenv("PAGES_URL", "https://pkpjs.github.io/test/saramin_results_latest.html")
+HTML_PATH = "docs/saramin_results_latest.html"
+STATE_PATH = "docs/last_rec_ids.json"   # 신규 감지용 저장 파일
+SARAMIN_BASE = "https://www.saramin.co.kr"
 
 # ===== 점수 가중치 =====
 DEADLINE_IMMINENT_3D = 50
 DEADLINE_IMMINENT_7D = 40
-DEADLINE_NONE        = 10
-FRESH_NEW            = 30
-FRESH_OLD            = -10
-FIRM_BIG             = 15
-FIRM_MID             = 10
-SALARY_GOOD          = 5
+DEADLINE_NONE = 10
+FRESH_NEW = 30
+FRESH_OLD = -10
+FIRM_BIG = 15
+FIRM_MID = 10
+SALARY_GOOD = 5
 
 BIG_FIRM_HINTS = ["대기업","공기업","공사","공단","그룹","삼성","LG","현대","롯데","한화","SK","카카오","네이버","KT","포스코"]
 MID_FIRM_HINTS = ["중견","강소","우량"]
@@ -84,7 +84,7 @@ def format_deadline_display(deadline_dt, raw_text: str) -> str:
         return f"마감 {mmdd}"
     return t or ""
 
-# ===== 공고 추출 =====
+# ===== 공고 추출 (⚠️ 이 부분이 수정되었습니다!) =====
 def extract_items():
     html = load_html_text()
     soup = BeautifulSoup(html, "lxml")
@@ -102,13 +102,14 @@ def extract_items():
                 return headers.index(n)
         return None
 
-    i_title   = idx("제목","링크","title")
+    # 크롤러가 만든 테이블 헤더명에 맞춤
+    i_title   = idx("제목")
     i_company = idx("회사","company")
     i_loc     = idx("위치","location")
     i_job     = idx("직무","job")
     i_dead    = idx("마감일","마감","deadline")
     i_salary  = idx("연봉","급여","salary")
-    i_direct  = idx("바로가기")
+    i_link_col = idx("링크") # ✅ '링크' 컬럼 인덱스 사용
 
     items = []
     for tr in rows:
@@ -116,24 +117,23 @@ def extract_items():
         if not tds: continue
 
         title, url = "", ""
+        
+        # 1. 제목 추출
         if i_title is not None and i_title < len(tds):
-            a = tds[i_title].find("a", href=True)
+            title = tds[i_title].get_text(strip=True)
+
+        # 2. ✅ 링크 추출: '링크' 컬럼에서 href를 추출합니다.
+        if i_link_col is not None and i_link_col < len(tds):
+            a = tds[i_link_col].find("a", href=True)
             if a:
-                title = a.get_text(strip=True)
-                href  = a["href"].strip()
-                url   = href if href.startswith("http") else urljoin(SARAMIN_BASE, href)
-
-        if not url and i_direct is not None and i_direct < len(tds):
-            a2 = tds[i_direct].find("a", href=True)
-            if a2:
-                href2 = a2["href"].strip()
-                url = href2 if href2.startswith("http") else urljoin(SARAMIN_BASE, href2)
-
+                url = a["href"].strip()
+        
+        # 나머지 데이터 추출
         company = tds[i_company].get_text(strip=True) if i_company is not None and i_company < len(tds) else ""
-        loc     = tds[i_loc].get_text(strip=True)     if i_loc     is not None and i_loc     < len(tds) else ""
-        job     = tds[i_job].get_text(strip=True)     if i_job     is not None and i_job     < len(tds) else "(직무정보없음)"
-        deadraw = tds[i_dead].get_text(strip=True)    if i_dead    is not None and i_dead    < len(tds) else ""
-        salary  = tds[i_salary].get_text(strip=True)  if i_salary  is not None and i_salary < len(tds) else ""
+        loc     = tds[i_loc].get_text(strip=True)      if i_loc     is not None and i_loc     < len(tds) else ""
+        job = tds[i_job].get_text(strip=True) if i_job is not None and i_job < len(tds) else "(직무정보없음)"
+        deadraw = tds[i_dead].get_text(strip=True)     if i_dead    is not None and i_dead    < len(tds) else ""
+        salary  = tds[i_salary].get_text(strip=True)   if i_salary  is not None and i_salary < len(tds) else ""
 
         rec_idx = None
         if url:
@@ -152,7 +152,7 @@ def extract_items():
             "deadline": deadline_dt,
             "deadline_disp": deadline_disp,
             "salary": salary,
-            "url": url or PAGES_URL,  # ✅ 여기 저장된 값이 실제 공고 링크
+            "url": url or PAGES_URL,  # ✅ 이제 url에 개별 링크가 들어가거나, 실패 시에만 고정 링크가 들어갑니다.
             "rec_idx": rec_idx
         })
     return items, total
@@ -226,7 +226,7 @@ def send_text(access_token: str, text: str):
     cur_len = 0
     for line in text.splitlines():
         add = len(line) + 1
-        if cur_len + add > 900:
+        if cur_len + add > 900: # 카카오 메시지 최대 길이 제한 고려
             chunks.append("\n".join(buf))
             buf, cur_len = [], 0
         buf.append(line)
@@ -240,7 +240,7 @@ def send_text(access_token: str, text: str):
             "object_type": "text",
             "text": chunk + suffix,
             "link": {"web_url": PAGES_URL, "mobile_web_url": PAGES_URL},
-            "button_title": "전체 공고 보기"
+            "button_title": "전체 공고 보기" # 버튼은 전체 페이지로 유지
         }
         data = {"template_object": json.dumps(template_object, ensure_ascii=False)}
         r = requests.post(url, headers=headers, data=data, timeout=20)
@@ -268,7 +268,7 @@ def main():
         title_line = f"{i}위 ({it['score']}점) | {it['company']} / {it['job']} | {it['location']} | {it['deadline_disp']}"
         lines.append(title_line)
 
-        # ✅ 여기 수정됨: 실제 공고 URL을 대표 링크로 출력
+        # ✅ 수정된 extract_items 덕분에 it.get('url')에 이제 개별 링크가 들어 있습니다.
         real_link = it.get('url')
         if not real_link and it.get('rec_idx'):
             real_link = f"https://www.saramin.co.kr/zf_user/jobs/relay/view?rec_idx={it['rec_idx']}"
