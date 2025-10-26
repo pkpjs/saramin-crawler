@@ -10,10 +10,10 @@ REST_API_KEY  = os.getenv("KAKAO_REST_API_KEY")
 REFRESH_TOKEN = os.getenv("KAKAO_REFRESH_TOKEN")
 PAGES_URL     = os.getenv("PAGES_URL", "https://pkpjs.github.io/test/saramin_results_latest.html")
 HTML_PATH     = "docs/saramin_results_latest.html"
-STATE_PATH    = "docs/last_rec_ids.json"
+STATE_PATH    = "docs/last_rec_ids.json"   # 신규 감지용 저장 파일
 SARAMIN_BASE  = "https://www.saramin.co.kr"
 
-# ===== 점수 기준 =====
+# ===== 점수 가중치 =====
 DEADLINE_IMMINENT_3D = 50
 DEADLINE_IMMINENT_7D = 40
 DEADLINE_NONE        = 10
@@ -26,15 +26,11 @@ SALARY_GOOD          = 5
 BIG_FIRM_HINTS = ["대기업","공기업","공사","공단","그룹","삼성","LG","현대","롯데","한화","SK","카카오","네이버","KT","포스코"]
 MID_FIRM_HINTS = ["중견","강소","우량"]
 
-# ===== Access Token 갱신 =====
-def refresh_access_token():
+# ===== Kakao 토큰 갱신 =====
+def refresh_access_token() -> str:
     url = "https://kauth.kakao.com/oauth/token"
-    data = {
-        "grant_type": "refresh_token",
-        "client_id": REST_API_KEY,
-        "refresh_token": REFRESH_TOKEN
-    }
-    r = requests.post(url, data=data)
+    data = {"grant_type": "refresh_token", "client_id": REST_API_KEY, "refresh_token": REFRESH_TOKEN}
+    r = requests.post(url, data=data, timeout=20)
     r.raise_for_status()
     js = r.json()
     if "access_token" not in js:
@@ -42,75 +38,108 @@ def refresh_access_token():
     return js["access_token"]
 
 # ===== HTML 로드 =====
-def load_html():
+def load_html_text() -> str:
     try:
         with open(HTML_PATH, "r", encoding="utf-8", errors="ignore") as f:
             return f.read()
     except FileNotFoundError:
-        r = requests.get(PAGES_URL)
-        r.raise_for_status()
+        r = requests.get(PAGES_URL, timeout=20); r.raise_for_status()
         return r.text
 
-# ===== 마감일 파싱 =====
+# ===== 마감일 파싱/표시 =====
 def parse_deadline(text: str):
-    if not text: return None
-    t = text.strip()
-    if any(word in t for word in ["상시", "수시", "채용시"]):
+    """표기에서 날짜 추출 -> datetime(KST) 또는 None(수시/상시/채용시)"""
+    if not text:
         return None
-    m = re.search(r"(\d{1,2})[./-](\d{1,2})", t) or re.search(r"(\d{1,2})월\s*(\d{1,2})일", t)
-    if not m: return None
+    t = text.strip()
+    if any(k in t for k in ["상시","수시","채용시","상시채용","수시채용"]):
+        return None
+    # "~ 11/14(금)", "11.14", "11-14", "11월 14일" 등
+    m = re.search(r'(\d{1,2})\s*[./-]\s*(\d{1,2})', t) or re.search(r'(\d{1,2})\s*월\s*(\d{1,2})\s*일', t)
+    if not m:
+        # "오늘마감/내일마감/18시마감" 등은 구체날짜가 없으니 None 처리
+        return None
     month, day = int(m.group(1)), int(m.group(2))
     now = datetime.now(KST)
     year = now.year
     d = datetime(year, month, day, tzinfo=KST)
+    # 페이지 생성시점상 전년도 표시 가능성 대비 보정
     if d < now - timedelta(days=180):
-        d = datetime(year + 1, month, day, tzinfo=KST)
+        d = datetime(year+1, month, day, tzinfo=KST)
     return d
 
 def days_to_deadline(d):
-    if not d:
-        return None
+    if not d: return None
     return (d.date() - datetime.now(KST).date()).days
 
-# ===== 공고 파싱 =====
+def format_deadline_display(deadline_dt, raw_text: str) -> str:
+    """
+    출력용: "마감 11/14 (D-3)" / "오늘마감" / "내일마감" / "상시채용" 등
+    raw_text에 '오늘마감/내일마감/18시마감' 등이 있으면 그걸 우선.
+    """
+    t = (raw_text or "").strip()
+    low = t.replace(" ", "").lower()
+    if any(k in low for k in ["오늘마감","today"]): return "오늘마감"
+    if any(k in low for k in ["내일마감","tomorrow"]): return "내일마감"
+    if any(k in t for k in ["상시","수시","채용시","상시채용","수시채용"]): return "상시채용"
+    if deadline_dt:
+        dday = days_to_deadline(deadline_dt)
+        mmdd = deadline_dt.strftime("%m/%d")
+        # dday가 음수면 "마감"으로 표기
+        if dday is not None:
+            if dday < 0:
+                return f"마감 {mmdd} (D+{abs(dday)})"
+            elif dday == 0:
+                return f"마감 {mmdd} (D-0)"
+            else:
+                return f"마감 {mmdd} (D-{dday})"
+        return f"마감 {mmdd}"
+    # 날짜 파싱 실패 시 원문 fallback
+    return t or ""
+
+# ===== 공고 추출 =====
 def extract_items():
-    html = load_html()
+    """
+    표 컬럼 가정:
+    제목/링크 | 회사 | 위치 | 경력 | 학력 | 마감일 | 바로가기 | (연봉/급여 옵션)
+    """
+    html = load_html_text()
     soup = BeautifulSoup(html, "lxml")
     table = soup.find("table")
     if not table:
         return [], 0
 
+    # 헤더 인덱스
     headers = [th.get_text(strip=True) for th in table.find_all("th")]
     rows = table.find_all("tr")[1:]
     total = len(rows)
 
     def idx(*names):
-        for name in names:
-            if name in headers:
-                return headers.index(name)
+        for n in names:
+            if n in headers:
+                return headers.index(n)
         return None
 
-    i_title   = idx("제목","링크")
-    i_company = idx("회사")
-    i_loc     = idx("위치")
-    i_job     = idx("직무")
-    i_dead    = idx("마감일","마감")
-    i_salary  = idx("연봉","급여")
+    i_title   = idx("제목","링크","title")
+    i_company = idx("회사","company")
+    i_loc     = idx("위치","location")
+    i_job     = idx("직무","job")
+    i_dead    = idx("마감일","마감","deadline")
+    i_salary  = idx("연봉","급여","salary")
     i_direct  = idx("바로가기")
 
     items = []
     for tr in rows:
         tds = tr.find_all("td")
-        if not tds:
-            continue
+        if not tds: continue
 
         title, url = "", ""
         if i_title is not None and i_title < len(tds):
             a = tds[i_title].find("a", href=True)
             if a:
                 title = a.get_text(strip=True)
-                href = a["href"].strip()
-                url = href if href.startswith("http") else urljoin(SARAMIN_BASE, href)
+                href  = a["href"].strip()
+                url   = href if href.startswith("http") else urljoin(SARAMIN_BASE, href)
 
         if not url and i_direct is not None and i_direct < len(tds):
             a2 = tds[i_direct].find("a", href=True)
@@ -118,72 +147,78 @@ def extract_items():
                 href2 = a2["href"].strip()
                 url = href2 if href2.startswith("http") else urljoin(SARAMIN_BASE, href2)
 
-        company = tds[i_company].get_text(strip=True) if i_company is not None else ""
-        loc     = tds[i_loc].get_text(strip=True) if i_loc is not None else ""
-        job     = tds[i_job].get_text(strip=True) if i_job is not None else "(직무정보없음)"
-        deadraw = tds[i_dead].get_text(strip=True) if i_dead is not None else ""
-        salary  = tds[i_salary].get_text(strip=True) if i_salary is not None else ""
+        company = tds[i_company].get_text(strip=True) if i_company is not None and i_company < len(tds) else ""
+        loc     = tds[i_loc].get_text(strip=True)     if i_loc     is not None and i_loc     < len(tds) else ""
+        job     = tds[i_job].get_text(strip=True)     if i_job     is not None and i_job     < len(tds) else "(직무정보없음)"
+        deadraw = tds[i_dead].get_text(strip=True)    if i_dead    is not None and i_dead    < len(tds) else ""
+        salary  = tds[i_salary].get_text(strip=True)  if i_salary  is not None and i_salary  < len(tds) else ""
+
         rec_idx = None
         if url:
             m = re.search(r"rec_idx=(\d+)", url)
-            if m:
-                rec_idx = m.group(1)
+            if m: rec_idx = m.group(1)
+
+        deadline_dt = parse_deadline(deadraw)
+        deadline_disp = format_deadline_display(deadline_dt, deadraw)
 
         items.append({
-            "title": title or "(제목없음)",
+            "title": title or "(제목 없음)",
             "company": company,
             "location": loc,
             "job": job,
             "deadline_text": deadraw,
-            "deadline": parse_deadline(deadraw),
+            "deadline": deadline_dt,
+            "deadline_disp": deadline_disp,
             "salary": salary,
             "url": url or PAGES_URL,
             "rec_idx": rec_idx
         })
     return items, total
 
-# ===== 점수 계산 =====
-def load_last_ids():
+# ===== 신규/과거 rec_idx 관리 =====
+def load_last_rec_ids():
     try:
         with open(STATE_PATH, "r", encoding="utf-8") as f:
             return set(json.load(f))
-    except:
+    except Exception:
         return set()
 
-def save_current_ids(items):
-    ids = [x["rec_idx"] for x in items if x.get("rec_idx")]
+def save_current_rec_ids(items):
+    recs = [x["rec_idx"] for x in items if x.get("rec_idx")]
     try:
+        os.makedirs(os.path.dirname(STATE_PATH), exist_ok=True)
         with open(STATE_PATH, "w", encoding="utf-8") as f:
-            json.dump(ids, f, ensure_ascii=False)
-    except:
+            json.dump(recs, f, ensure_ascii=False, indent=2)
+    except Exception:
         pass
 
-def deadline_score(dl):
-    d = days_to_deadline(dl)
+# ===== 점수 계산 =====
+def deadline_score(deadline):
+    d = days_to_deadline(deadline)
     if d is None: return DEADLINE_NONE
-    if d <= 3: return DEADLINE_IMMINENT_3D
-    if d <= 7: return DEADLINE_IMMINENT_7D
-    return max(0, 30 - min(d, 30))
+    if d <= 3:    return DEADLINE_IMMINENT_3D
+    if d <= 7:    return DEADLINE_IMMINENT_7D
+    return max(0, 30 - min(d, 30))  # 멀수록 낮아짐 (최대 30 → 0)
 
-def freshness_score(item, last_ids):
+def freshness_score(item, last_ids: set):
     rec = item.get("rec_idx")
     return FRESH_NEW if rec and rec not in last_ids else FRESH_OLD
 
-def firm_score(name):
+def firm_score(name: str):
     n = (name or "").lower()
     if any(k.lower() in n for k in BIG_FIRM_HINTS): return FIRM_BIG
     if any(k.lower() in n for k in MID_FIRM_HINTS): return FIRM_MID
     return 0
 
-def salary_score(text):
-    if not text or "협의" in text:
-        return 0
-    nums = re.findall(r"\d{3,4}", text)
-    if nums and max(map(int, nums)) >= 3500:
+def salary_score(text: str):
+    if not text: return 0
+    if "협의" in text: return 0
+    nums = [int(x) for x in re.findall(r'\d{3,4}', text)]
+    if nums and max(nums) >= 3500:  # 3500만 이상 언급 시 소폭 가산
         return SALARY_GOOD
     return 0
 
-def total_score(item, last_ids):
+def score_item(item, last_ids: set):
     return (
         deadline_score(item["deadline"]) +
         freshness_score(item, last_ids) +
@@ -191,46 +226,79 @@ def total_score(item, last_ids):
         salary_score(item["salary"])
     )
 
-def rank_top5():
-    items, total = extract_items()
-    last_ids = load_last_ids()
+def rank_top(items, k=5):
+    last_ids = load_last_rec_ids()
     for it in items:
-        it["score"] = total_score(it, last_ids)
+        it["score"] = score_item(it, last_ids)
     items.sort(key=lambda x: x["score"], reverse=True)
-    save_current_ids(items)
-    return items[:5], total
+    topk = items[:k]
+    save_current_rec_ids(items)  # 이번 회차 기록
+    return topk
 
-# ===== 카카오톡 전송 =====
-def send_text_message(access_token, content):
+# ===== 카카오 전송 (길이 초과 시 자동 분할) =====
+def send_text(access_token: str, text: str):
+    """
+    카카오 default 텍스트 템플릿 사용.
+    텍스트 길이 제한(대략 1000자 근처)을 고려해 900자 단위로 분할 전송.
+    """
     url = "https://kapi.kakao.com/v2/api/talk/memo/default/send"
     headers = {"Authorization": f"Bearer {access_token}"}
-    template_object = {
-        "object_type": "text",
-        "text": content,
-        "link": {"web_url": PAGES_URL, "mobile_web_url": PAGES_URL},
-        "button_title": "전체 공고 보기"
-    }
-    data = {"template_object": json.dumps(template_object, ensure_ascii=False)}
-    r = requests.post(url, headers=headers, data=data)
-    print("전송 결과:", r.json())
 
-# ===== 메인 실행 =====
+    # 900자 단위로 분할
+    chunks = []
+    buf = []
+    cur_len = 0
+    for line in text.splitlines():
+        add = len(line) + 1
+        if cur_len + add > 900:
+            chunks.append("\n".join(buf))
+            buf, cur_len = [], 0
+        buf.append(line)
+        cur_len += add
+    if buf:
+        chunks.append("\n".join(buf))
+
+    for i, chunk in enumerate(chunks, start=1):
+        suffix = f"\n\n(#{i}/{len(chunks)})" if len(chunks) > 1 else ""
+        template_object = {
+            "object_type": "text",
+            "text": chunk + suffix,
+            "link": {"web_url": PAGES_URL, "mobile_web_url": PAGES_URL},
+            "button_title": "전체 공고 보기"
+        }
+        data = {"template_object": json.dumps(template_object, ensure_ascii=False)}
+        r = requests.post(url, headers=headers, data=data, timeout=20)
+        try:
+            print("전송 결과:", r.json())
+        except Exception:
+            print("전송 결과:", r.text)
+
+# ===== 메인 =====
 def main():
     access_token = refresh_access_token()
-    top5, total = rank_top5()
+    items_all, total = extract_items()
+    if not items_all:
+        print("❌ 데이터 없음")
+        return
+
+    top5 = rank_top(items_all, k=5)
 
     today = datetime.now(KST).strftime("%Y-%m-%d")
-    text = [f"📅 {today} 기준 AI 추천 TOP 5 채용공고",
-            f"총 {total}개 중 선별된 상위 공고입니다.\n"]
+    lines = []
+    lines.append(f"📅 {today} 기준 AI 추천 TOP 5 채용공고")
+    lines.append(f"총 {total}개 중 선별된 상위 공고입니다.\n")
 
-    for idx, item in enumerate(top5, start=1):
-        text.append(f"{idx}위 ({item['score']}점) | {item['company']} / {item['job']} | {item['location']}")
-        text.append(f"🔗 {item['url']}\n")
+    # 본문(1~5위): "1위 (92점) | 회사 / 직무 | 지역 | 마감 11/14 (D-3)" + 실제 URL
+    for i, it in enumerate(top5, start=1):
+        title_line = f"{i}위 ({it['score']}점) | {it['company']} / {it['job']} | {it['location']} | {it['deadline_disp']}".strip().rstrip("|")
+        lines.append(title_line)
+        lines.append(f"🔗 {it['url']}\n")
 
-    text.append(f"👇 전체 공고 보기:\n{PAGES_URL}")
-    final_message = "\n".join(text)
+    lines.append(f"👇 전체 공고 보기:\n{PAGES_URL}")
 
-    send_text_message(access_token, final_message)
+    final_message = "\n".join(lines)
+    send_text(access_token, final_message)
+    print(f"✅ 전송 완료: {len(top5)}개 항목")
 
 if __name__ == "__main__":
     main()
