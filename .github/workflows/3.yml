@@ -9,7 +9,7 @@ jobs:
   run:
     runs-on: ubuntu-latest
     permissions:
-      contents: write   # docs 폴더에 HTML 저장 후 커밋하기 위함
+      contents: write
 
     env:
       EMAIL_SENDER: ${{ secrets.EMAIL_SENDER }}
@@ -21,7 +21,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
-          persist-credentials: true   # ✅ Git push 가능하도록 설정
+          persist-credentials: true
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -34,7 +34,13 @@ jobs:
           pip install requests beautifulsoup4 pandas google-auth google-auth-oauthlib google-api-python-client
 
       - name: Run Saramin Crawler
-        run: python test.py   # ← 파일명 확인 후 수정 필요
+        run: python test.py
+
+      - name: Remove old CSV files
+        run: |
+          echo "🧹 Removing yesterday's CSV files..."
+          find . -maxdepth 1 -type f -name "saramin_results_*.csv" ! -name "saramin_results_$(date -u +'%Y%m%d')*.csv" -delete || true
+          echo "✅ Cleanup done."
 
       - name: Commit and Push HTML & CSV
         run: |
