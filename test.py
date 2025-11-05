@@ -1,4 +1,5 @@
 # -*- coding: utf-8 -*-
+import json
 import math, time, os, re, requests, smtplib
 from bs4 import BeautifulSoup
 import pandas as pd
@@ -6,6 +7,31 @@ from datetime import datetime
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 from pathlib import Path
+
+
+def normalize_text(value: str) -> str:
+    return re.sub(r"\s+", " ", (value or "").strip()).lower()
+
+
+def load_application_status_map(path: Path = Path("docs/application_status.json")):
+    if not path.exists():
+        return {}
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError:
+        return {}
+
+    messages = data.get("messages", [])
+    mapping = {}
+    for entry in messages:
+        norm_title = entry.get("normalized_title") or normalize_text(entry.get("title", ""))
+        norm_company = entry.get("normalized_company") or normalize_text(entry.get("company", ""))
+        if not norm_title:
+            continue
+        status_value = entry.get("status") or "지원 완료"
+        mapping[(norm_company, norm_title)] = status_value
+        mapping[("", norm_title)] = status_value
+    return mapping
 
 # ================== AI 가중치 ==================
 BIG_FIRM_HINTS = ["대기업","공기업","공사","공단","그룹","삼성","LG","현대","롯데","한화","SK","카카오","네이버","KT","포스코"]
@@ -150,15 +176,29 @@ class SaraminCrawler:
 
         df["score"] = df.apply(score_job, axis=1)
         df = df.sort_values("score",ascending=False).reset_index(drop=True)
+        return self.apply_application_status(df)
+
+    def apply_application_status(self, df: pd.DataFrame) -> pd.DataFrame:
+        status_map = load_application_status_map()
+        if not status_map:
+            df["status"] = ""
+            return df
+
+        def resolve_status(row):
+            norm_company = normalize_text(row.get("company", ""))
+            norm_title = normalize_text(row.get("title", ""))
+            return status_map.get((norm_company, norm_title)) or status_map.get(("", norm_title)) or ""
+
+        df["status"] = df.apply(resolve_status, axis=1)
         return df
 
     def build_html(self, df, path):
         p = Path(path)
         p.parent.mkdir(exist_ok=True, parents=True)
 
-        styled = df[['title','company','location','career','education','deadline','score','link']].copy()
+        styled = df[['title','company','status','location','career','education','deadline','score','link']].copy()
         styled.rename(columns={
-            'title':'제목','company':'회사','location':'위치','career':'경력',
+            'title':'제목','company':'회사','status':'지원상태','location':'위치','career':'경력',
             'education':'학력','deadline':'마감일','score':'점수','link':'링크'
         }, inplace=True)
         styled['링크']=styled['링크'].apply(lambda x: f'<a href="{x}" target="_blank">바로가기</a>')
@@ -188,11 +228,12 @@ class SaraminCrawler:
         """
 
         for j in jobs[:10]:
+            status_html = f" · 상태: {j.get('status')}" if j.get("status") else ""
             html += f"""
             <div class='card'>
               <div class='title'>{j['title']}</div>
               <div class='company'>{j['company']}</div>
-              <div class='meta'>{j['location']} · 마감: {j['deadline']} · 점수: {j['score']}</div>
+              <div class='meta'>{j['location']} · 마감: {j['deadline']} · 점수: {j['score']}{status_html}</div>
               <a href="{j['link']}" target="_blank">🔗 공고 바로가기</a>
             </div>
             """

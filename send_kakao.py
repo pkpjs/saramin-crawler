@@ -106,6 +106,7 @@ def extract_items():
     i_title   = idx("제목")
     i_company = idx("회사","company")
     i_loc     = idx("위치","location")
+    i_status  = idx("지원상태","지원 상태","status")
     i_job     = idx("직무","job")
     i_dead    = idx("마감일","마감","deadline")
     i_salary  = idx("연봉","급여","salary")
@@ -144,6 +145,7 @@ def extract_items():
         loc     = tds[i_loc].get_text(strip=True)      if i_loc     is not None and i_loc     < len(tds) else ""
         job = tds[i_job].get_text(strip=True) if i_job is not None and i_job < len(tds) else "(직무정보없음)"
         deadraw = tds[i_dead].get_text(strip=True)     if i_dead    is not None and i_dead    < len(tds) else ""
+        status  = tds[i_status].get_text(strip=True)   if i_status  is not None and i_status  < len(tds) else ""
         salary  = tds[i_salary].get_text(strip=True)   if i_salary  is not None and i_salary < len(tds) else ""
 
         # rec_idx는 위에서 이미 파싱했으므로, 여기서는 불필요한 재파싱 로직 제거
@@ -160,6 +162,7 @@ def extract_items():
             "deadline": deadline_dt,
             "deadline_disp": deadline_disp,
             "salary": salary,
+            "status": status,
             "url": url or PAGES_URL,  # 단축 URL 또는 PAGES_URL이 저장됨
             "rec_idx": rec_idx
         })
@@ -275,6 +278,8 @@ def main():
 
     for i, it in enumerate(top5, start=1):
         title_line = f"{i}위 ({it['score']}점) | {it['company']} / {it['job']} | {it['location']} | {it['deadline_disp']}"
+        if it.get("status"):
+            title_line += f" | 상태: {it['status']}"
         lines.append(title_line)
 
         # 단축 URL이 it['url']에 이미 저장되어 있습니다.
