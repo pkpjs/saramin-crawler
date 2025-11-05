@@ -1,0 +1,7 @@
+beautifulsoup4
+requests
+lxml
+pandas
+google-api-python-client
+google-auth
+google-auth-oauthlib
