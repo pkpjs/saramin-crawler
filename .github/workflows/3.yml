@@ -36,10 +36,17 @@ jobs:
       - name: Run Saramin Crawler
         run: python test.py
 
+      # ✅ 추가된 Step — 지원완료 메일 감지 & CSV 업데이트
+      - name: Check Gmail and Update Applied Status
+        env:
+          GOOGLE_TOKEN: ${{ secrets.GOOGLE_TOKEN }}
+        run: |
+          echo "📬 Checking Gmail for '지원 완료' mails..."
+          python update_from_mail.py || echo "⚠️ No mail updates or script skipped"
+
       - name: Remove old CSV files (Keep only today's)
         run: |
           echo "🧹 Removing old CSV files (keep only today's)..."
-          # UTC 기준 오늘 날짜를 포함하지 않는 파일들을 삭제
           find . -maxdepth 1 -type f -name "saramin_results_*.csv" \
             ! -name "saramin_results_$(date -u +'%Y%m%d')*.csv" -delete || true
           echo "✅ CSV cleanup completed."
@@ -52,12 +59,7 @@ jobs:
           echo "✅ Pulling latest changes with rebase..."
           git pull origin main --rebase || true
 
-          # 새로 추가/수정된 파일 및 HTML 파일을 스테이징합니다.
           git add docs/*.html *.csv || true
-          
-          # 🚨 핵심 수정: Git이 추적하는 파일 중 삭제된 파일을 스테이징합니다.
-          # 이 명령이 있어야 'Remove old CSV files' 스텝에서 지운 파일이
-          # Git 커밋에 포함되어 최종적으로 GitHub 저장소에서 삭제됩니다.
           git add -u . || true 
 
           if git diff --cached --quiet; then

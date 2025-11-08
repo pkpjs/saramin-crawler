@@ -20,6 +20,7 @@ FIRM_BIG = 15
 FIRM_MID = 10
 SALARY_GOOD = 5
 
+
 def score_job(j):
     score = 0
 
@@ -33,24 +34,26 @@ def score_job(j):
                 d = (dd - datetime.now()).days
                 if d <= 3: score += DEADLINE_IMMINENT_3D
                 elif d <= 7: score += DEADLINE_IMMINENT_7D
-        except: pass
+        except:
+            pass
     else:
         score += DEADLINE_NONE
 
     # 회사 규모
-    name = j.get("company","")
+    name = j.get("company", "")
     if any(k in name for k in BIG_FIRM_HINTS): score += FIRM_BIG
     elif any(k in name for k in MID_FIRM_HINTS): score += FIRM_MID
 
     # 신규 공고 보너스
     try:
-        t = datetime.strptime(j.get("crawled_at",""), "%Y-%m-%d %H:%M:%S")
+        t = datetime.strptime(j.get("crawled_at", ""), "%Y-%m-%d %H:%M:%S")
         if (datetime.now() - t).days <= 1: score += FRESH_NEW
         else: score += FRESH_OLD
-    except: pass
+    except:
+        pass
 
-    # 연봉 텍스트 점수
-    salary = j.get("salary","")
+    # 연봉 점수
+    salary = j.get("salary", "")
     if salary and "협의" not in salary:
         nums = [int(x) for x in re.findall(r'\d{3,4}', salary)]
         if nums and max(nums) >= 3500: score += SALARY_GOOD
@@ -58,6 +61,7 @@ def score_job(j):
     return score
 
 
+# ================== Saramin Crawler ==================
 class SaraminCrawler:
     def __init__(self):
         self.api_url = "https://www.saramin.co.kr/zf_user/search/get-recruit-list"
@@ -67,20 +71,20 @@ class SaraminCrawler:
             "X-Requested-With": "XMLHttpRequest",
         }
         self.params = {
-            "searchType":"search",
-            "loc_mcd":"106000,104000,105000,107000,110000,111000",
-            "cat_kewd":"83,84,85,90,104,108,111,112,114,116",
-            "company_cd":"0,1,2,3,4,5,6,7,9,10",
-            "exp_cd":"1",
-            "exp_none":"y",
-            "job_type":"1",
-            "search_optional_item":"y",
-            "search_done":"y",
-            "panel_count":"y",
-            "preview":"y",
-            "recruitPage":1,
-            "recruitPageCount":40,
-            "recruitSort":"relation"
+            "searchType": "search",
+            "loc_mcd": "106000,104000,105000,107000,110000,111000",
+            "cat_kewd": "83,84,85,90,104,108,111,112,114,116",
+            "company_cd": "0,1,2,3,4,5,6,7,9,10",
+            "exp_cd": "1",
+            "exp_none": "y",
+            "job_type": "1",
+            "search_optional_item": "y",
+            "search_done": "y",
+            "panel_count": "y",
+            "preview": "y",
+            "recruitPage": 1,
+            "recruitPageCount": 40,
+            "recruitSort": "relation"
         }
 
     def _parse_page(self, html):
@@ -90,18 +94,19 @@ class SaraminCrawler:
             try:
                 rec_idx = (item.get("value") or "").strip()
                 a = item.select_one("h2.job_tit a")
-                if not a: continue
+                if not a:
+                    continue
                 title = a.get_text(strip=True)
-                href = a.get("href","")
+                href = a.get("href", "")
                 link = "https://www.saramin.co.kr" + href if href.startswith("/") else href
 
                 corp_el = item.select_one("strong.corp_name a, strong.corp_name")
                 company = corp_el.get_text(strip=True) if corp_el else ""
 
                 info = item.select("div.job_condition span")
-                location = info[0].get_text(strip=True) if len(info)>0 else ""
-                career = info[1].get_text(strip=True) if len(info)>1 else ""
-                edu = info[2].get_text(strip=True) if len(info)>2 else ""
+                location = info[0].get_text(strip=True) if len(info) > 0 else ""
+                career = info[1].get_text(strip=True) if len(info) > 1 else ""
+                edu = info[2].get_text(strip=True) if len(info) > 2 else ""
 
                 deadline_el = item.select_one("div.job_date span.date")
                 deadline = deadline_el.get_text(strip=True) if deadline_el else ""
@@ -124,56 +129,173 @@ class SaraminCrawler:
 
     def _fetch(self, page):
         p = dict(self.params)
-        p["recruitPage"]=page
+        p["recruitPage"] = page
         r = requests.get(self.api_url, params=p, headers=self.headers)
         data = r.json()
-        html = data.get("innerHTML","")
-        cnt = int(str(data.get("count","0")).replace(",","") or 0)
+        html = data.get("innerHTML", "")
+        cnt = int(str(data.get("count", "0")).replace(",", "") or 0)
         return self._parse_page(html), cnt
 
     def crawl_all(self):
         all_jobs, first = [], None
         first, total = self._fetch(1)
-        if not first: return pd.DataFrame()
+        if not first:
+            return pd.DataFrame()
         all_jobs.extend(first)
 
         pages = math.ceil(total / int(self.params["recruitPageCount"]))
-        for p in range(2, pages+1):
-            jobs,_ = self._fetch(p)
-            if not jobs: break
+        for p in range(2, pages + 1):
+            jobs, _ = self._fetch(p)
+            if not jobs:
+                break
             all_jobs.extend(jobs)
             time.sleep(0.4)
 
         df = pd.DataFrame(all_jobs)
-        if df.empty: return df
+        if df.empty:
+            return df
         df.drop_duplicates(subset=["rec_idx"], inplace=True)
 
         df["score"] = df.apply(score_job, axis=1)
-        df = df.sort_values("score",ascending=False).reset_index(drop=True)
+        df = df.sort_values("score", ascending=False).reset_index(drop=True)
         return df
 
+    # ================== 반응형 HTML 생성 ==================
     def build_html(self, df, path):
         p = Path(path)
         p.parent.mkdir(exist_ok=True, parents=True)
 
-        styled = df[['title','company','location','career','education','deadline','score','link']].copy()
-        styled.rename(columns={
-            'title':'제목','company':'회사','location':'위치','career':'경력',
-            'education':'학력','deadline':'마감일','score':'점수','link':'링크'
-        }, inplace=True)
-        styled['링크']=styled['링크'].apply(lambda x: f'<a href="{x}" target="_blank">바로가기</a>')
+        styled = df[['title', 'company', 'location', 'career', 'education', 'deadline', 'score', 'link']].copy()
+        styled = styled.fillna('')
 
-        html = styled.to_html(index=False,escape=False)
-        p.write_text(f"<h2>AI 추천 채용공고</h2>{html}", encoding="utf-8")
-        print("✅ HTML 생성")
+        html_content = """
+        <!DOCTYPE html>
+        <html lang="ko">
+        <head>
+            <meta charset="UTF-8">
+            <meta name="viewport" content="width=device-width, initial-scale=1">
+            <title>AI 추천 채용공고</title>
+            <style>
+                body {
+                    font-family: "Pretendard", "Apple SD Gothic Neo", sans-serif;
+                    background: #f9fafb;
+                    color: #333;
+                    margin: 0;
+                    padding: 0;
+                }
+                h2 {
+                    text-align: center;
+                    color: #2563eb;
+                    padding: 20px 0;
+                    font-size: 1.5rem;
+                }
+                .container {
+                    display: grid;
+                    grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
+                    gap: 16px;
+                    padding: 20px;
+                    max-width: 1200px;
+                    margin: auto;
+                }
+                .card {
+                    background: #fff;
+                    border-radius: 14px;
+                    box-shadow: 0 2px 10px rgba(0,0,0,0.05);
+                    padding: 16px 18px;
+                    transition: transform 0.15s ease, box-shadow 0.15s ease;
+                    display: flex;
+                    flex-direction: column;
+                    justify-content: space-between;
+                }
+                .card:hover {
+                    transform: translateY(-4px);
+                    box-shadow: 0 4px 12px rgba(0,0,0,0.08);
+                }
+                .title {
+                    font-size: 16px;
+                    font-weight: 600;
+                    color: #1e40af;
+                    margin-bottom: 6px;
+                }
+                .company {
+                    font-size: 15px;
+                    color: #111827;
+                    margin-bottom: 6px;
+                }
+                .meta {
+                    font-size: 13px;
+                    color: #6b7280;
+                    margin-bottom: 10px;
+                }
+                .score {
+                    background: #e0f2fe;
+                    color: #0369a1;
+                    padding: 4px 10px;
+                    border-radius: 8px;
+                    display: inline-block;
+                    font-size: 13px;
+                    font-weight: 500;
+                }
+                a.button {
+                    background: #2563eb;
+                    color: #fff;
+                    text-align: center;
+                    padding: 10px 12px;
+                    border-radius: 8px;
+                    font-size: 14px;
+                    font-weight: 600;
+                    text-decoration: none;
+                    transition: background 0.2s ease;
+                }
+                a.button:hover {
+                    background: #1d4ed8;
+                }
+                @media (max-width: 600px) {
+                    .container {
+                        grid-template-columns: 1fr;
+                        padding: 10px;
+                    }
+                    .card {
+                        padding: 14px;
+                    }
+                    h2 {
+                        font-size: 1.2rem;
+                    }
+                }
+            </style>
+        </head>
+        <body>
+        <h2>🎯 AI 추천 채용공고</h2>
+        <div class="container">
+        """
 
+        for _, row in styled.iterrows():
+            html_content += f"""
+            <div class="card">
+                <div class="title">{row['title']}</div>
+                <div class="company">{row['company']}</div>
+                <div class="meta">{row['location']} · {row['career']} · {row['education']} · 마감일: {row['deadline']}</div>
+                <div class="score">점수: {row['score']}</div>
+                <a href="{row['link']}" class="button" target="_blank">🔗 공고 바로가기</a>
+            </div>
+            """
+
+        html_content += """
+        </div>
+        </body>
+        </html>
+        """
+
+        p.write_text(html_content, encoding="utf-8")
+        print(f"✅ 반응형 HTML 생성 완료 → {path}")
+
+    # ================== 이메일 전송 ==================
     def send_email(self, jobs, sender, pw, receiver, pages_url):
         msg = MIMEMultipart('alternative')
-        msg['From']=sender
-        msg['To']=receiver
-        msg['Subject']=f"🎯 AI 추천 채용공고 - {datetime.now().strftime('%Y-%m-%d')}"
+        msg['From'] = sender
+        msg['To'] = receiver
+        msg['Subject'] = f"🎯 AI 추천 채용공고 - {datetime.now().strftime('%Y-%m-%d')}"
 
-        # 📌 Gmail 카드 UI
         html = """
         <html><head><meta charset="UTF-8">
         <style>
@@ -204,11 +326,11 @@ class SaraminCrawler:
         </body></html>
         """
 
-        msg.attach(MIMEText(html,'html','utf-8'))
+        msg.attach(MIMEText(html, 'html', 'utf-8'))
 
-        s = smtplib.SMTP('smtp.gmail.com',587)
+        s = smtplib.SMTP('smtp.gmail.com', 587)
         s.starttls()
-        s.login(sender,pw)
+        s.login(sender, pw)
         s.send_message(msg)
         s.quit()
         print("📧 이메일 전송 완료!")
@@ -216,7 +338,8 @@ class SaraminCrawler:
 
 def clean_old_csv():
     files = sorted(Path(".").glob("saramin_results_*.csv"), key=lambda x: x.stat().st_mtime, reverse=True)
-    for f in files[1:]: os.remove(f)
+    for f in files[1:]:
+        os.remove(f)
 
 
 # ================= MAIN ==================
@@ -224,11 +347,12 @@ if __name__ == "__main__":
     crawler = SaraminCrawler()
     df = crawler.crawl_all()
     if df.empty:
-        print("❌ 데이터 없음"); exit()
+        print("❌ 데이터 없음")
+        exit()
 
     ts = datetime.now().strftime('%Y%m%d_%H%M%S')
     csv_path = f"saramin_results_{ts}.csv"
-    df.to_csv(csv_path,index=False,encoding="utf-8-sig")
+    df.to_csv(csv_path, index=False, encoding="utf-8-sig")
     print(f"✅ CSV 저장: {csv_path}")
 
     clean_old_csv()
@@ -236,12 +360,13 @@ if __name__ == "__main__":
     html = "docs/saramin_results_latest.html"
     crawler.build_html(df, html)
 
-    EMAIL_SENDER=os.getenv("EMAIL_SENDER")
-    EMAIL_RECEIVER=os.getenv("EMAIL_RECEIVER")
-    EMAIL_APP_PASSWORD=os.getenv("EMAIL_APP_PASSWORD")
+    EMAIL_SENDER = os.getenv("EMAIL_SENDER")
+    EMAIL_RECEIVER = os.getenv("EMAIL_RECEIVER")
+    EMAIL_APP_PASSWORD = os.getenv("EMAIL_APP_PASSWORD")
 
-    if not all([EMAIL_SENDER,EMAIL_RECEIVER,EMAIL_APP_PASSWORD]):
-        print("❌ 이메일 env 없음"); exit()
+    if not all([EMAIL_SENDER, EMAIL_RECEIVER, EMAIL_APP_PASSWORD]):
+        print("❌ 이메일 env 없음")
+        exit()
 
     crawler.send_email(
         df.to_dict(orient="records"),
