@@ -161,78 +161,133 @@ class SaraminCrawler:
         return df
 
     # ================== 반응형 HTML 생성 ==================
-   def build_html(self, df, path):
-    p = Path(path)
-    p.parent.mkdir(exist_ok=True, parents=True)
+    def build_html(self, df, path):
+        p = Path(path)
+        p.parent.mkdir(exist_ok=True, parents=True)
 
-    # JSON용 데이터 정제
-    jobs = []
-    for _, row in df.iterrows():
-        jobs.append({
-            "title": row.get("title", ""),
-            "company": row.get("company", ""),
-            "location": row.get("location", ""),
-            "career": row.get("career", ""),
-            "edu": row.get("education", ""),
-            "deadline": row.get("deadline", ""),
-            "score": int(row.get("score", 0)),
-            "url": row.get("link", "")
-        })
+        styled = df[['title', 'company', 'location', 'career', 'education', 'deadline', 'score', 'link']].copy()
+        styled = styled.fillna('')
 
-    json_str = json.dumps(jobs, ensure_ascii=False, indent=2)
+        html_content = """
+        <!DOCTYPE html>
+        <html lang="ko">
+        <head>
+            <meta charset="UTF-8">
+            <meta name="viewport" content="width=device-width, initial-scale=1">
+            <title>AI 추천 채용공고</title>
+            <style>
+                body {
+                    font-family: "Pretendard", "Apple SD Gothic Neo", sans-serif;
+                    background: #f9fafb;
+                    color: #333;
+                    margin: 0;
+                    padding: 0;
+                }
+                h2 {
+                    text-align: center;
+                    color: #2563eb;
+                    padding: 20px 0;
+                    font-size: 1.5rem;
+                }
+                .container {
+                    display: grid;
+                    grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
+                    gap: 16px;
+                    padding: 20px;
+                    max-width: 1200px;
+                    margin: auto;
+                }
+                .card {
+                    background: #fff;
+                    border-radius: 14px;
+                    box-shadow: 0 2px 10px rgba(0,0,0,0.05);
+                    padding: 16px 18px;
+                    transition: transform 0.15s ease, box-shadow 0.15s ease;
+                    display: flex;
+                    flex-direction: column;
+                    justify-content: space-between;
+                }
+                .card:hover {
+                    transform: translateY(-4px);
+                    box-shadow: 0 4px 12px rgba(0,0,0,0.08);
+                }
+                .title {
+                    font-size: 16px;
+                    font-weight: 600;
+                    color: #1e40af;
+                    margin-bottom: 6px;
+                }
+                .company {
+                    font-size: 15px;
+                    color: #111827;
+                    margin-bottom: 6px;
+                }
+                .meta {
+                    font-size: 13px;
+                    color: #6b7280;
+                    margin-bottom: 10px;
+                }
+                .score {
+                    background: #e0f2fe;
+                    color: #0369a1;
+                    padding: 4px 10px;
+                    border-radius: 8px;
+                    display: inline-block;
+                    font-size: 13px;
+                    font-weight: 500;
+                }
+                a.button {
+                    background: #2563eb;
+                    color: #fff;
+                    text-align: center;
+                    padding: 10px 12px;
+                    border-radius: 8px;
+                    font-size: 14px;
+                    font-weight: 600;
+                    text-decoration: none;
+                    transition: background 0.2s ease;
+                }
+                a.button:hover {
+                    background: #1d4ed8;
+                }
+                @media (max-width: 600px) {
+                    .container {
+                        grid-template-columns: 1fr;
+                        padding: 10px;
+                    }
+                    .card {
+                        padding: 14px;
+                    }
+                    h2 {
+                        font-size: 1.2rem;
+                    }
+                }
+            </style>
+        </head>
+        <body>
+        <h2>🎯 AI 추천 채용공고</h2>
+        <div class="container">
+        """
 
-    # 새 UI 템플릿 읽기 (캔버스 버전 복붙해도 되고, 여기 내장 가능)
-    html_template = """<!doctype html>
-<html lang="ko">
-<head>
-  <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>AI 추천 채용공고 · 새 UI</title>
-  <script src="https://cdn.tailwindcss.com"></script>
-  <script>
-    tailwind.config = { darkMode: 'class' }
-  </script>
-  <link rel="stylesheet" href="https://cdn.jsdelivr.net/gh/orioncactus/pretendard/dist/web/static/pretendard.css" />
-</head>
-<body class="bg-slate-50 dark:bg-slate-900 text-slate-900 dark:text-slate-100 font-sans">
-  <div class="min-h-screen flex flex-col">
-    <header class="sticky top-0 bg-white/80 dark:bg-slate-900/80 backdrop-blur border-b border-slate-200/60 dark:border-slate-700/60">
-      <div class="max-w-6xl mx-auto flex items-center justify-between px-4 py-3">
-        <h1 class="font-bold text-lg">🎯 AI 추천 채용공고</h1>
-        <button id="themeBtn" class="px-3 py-1.5 border border-slate-300 dark:border-slate-700 rounded-xl">🌗</button>
-      </div>
-    </header>
-    <main class="flex-1 max-w-6xl mx-auto p-4" id="grid">불러오는 중...</main>
-    <footer class="py-4 text-center text-sm text-slate-500 dark:text-slate-400 border-t border-slate-200 dark:border-slate-700">
-      © pkpjs · 마지막 업데이트 {datetime.now().strftime('%Y-%m-%d %H:%M')}
-    </footer>
-  </div>
-  <script type="application/json" id="jobs-data">{json_str}</script>
-  <script>
-    const jobs = JSON.parse(document.getElementById('jobs-data').textContent);
-    const grid = document.getElementById('grid');
-    function card(j) {
-      return `
-      <article class="bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-2xl p-4 shadow-sm hover:shadow-md transition">
-        <h3 class="font-semibold text-indigo-600 dark:text-indigo-400">${j.title}</h3>
-        <p class="text-sm text-slate-600 dark:text-slate-300">${j.company}</p>
-        <p class="text-xs text-slate-500 dark:text-slate-400 mt-1">${j.location} · ${j.career} · ${j.edu}</p>
-        <div class="mt-2 flex justify-between text-sm">
-          <span>마감일: ${j.deadline}</span>
-          <span class="font-medium text-indigo-500">점수 ${j.score}</span>
+        for _, row in styled.iterrows():
+            html_content += f"""
+            <div class="card">
+                <div class="title">{row['title']}</div>
+                <div class="company">{row['company']}</div>
+                <div class="meta">{row['location']} · {row['career']} · {row['education']} · 마감일: {row['deadline']}</div>
+                <div class="score">점수: {row['score']}</div>
+                <a href="{row['link']}" class="button" target="_blank">🔗 공고 바로가기</a>
+            </div>
+            """
+
+        html_content += """
         </div>
-        <a href="${j.url}" target="_blank" class="mt-3 inline-block text-center w-full bg-indigo-600 hover:bg-indigo-700 text-white rounded-xl py-2">공고 보기</a>
-      </article>`;
-    }
-    grid.innerHTML = jobs.map(card).join('');
-    const themeBtn = document.getElementById('themeBtn');
-    themeBtn.onclick = () => document.documentElement.classList.toggle('dark');
-  </script>
-</body>
-</html>
-"""
-    p.write_text(html_template, encoding="utf-8")
-    print(f"✅ 새 UI HTML 생성 완료 → {path}")
+        </body>
+        </html>
+        """
+
+        p.write_text(html_content, encoding="utf-8")
+        print(f"✅ 반응형 HTML 생성 완료 → {path}")
 
     # ================== 이메일 전송 ==================
     def send_email(self, jobs, sender, pw, receiver, pages_url):
