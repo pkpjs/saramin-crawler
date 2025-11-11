@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-import math, time, os, re, csv, requests, smtplib
+import math, time, os, re, csv, json, requests, smtplib
 import pandas as pd
 from bs4 import BeautifulSoup
 from datetime import datetime
@@ -163,11 +163,18 @@ class SaraminCrawler:
         print(f"✅ HTML 생성 완료 → {path}")
 
 
-# ✅ Gmail에서 지원완료 반영
+# ✅ Gmail에서 지원완료 반영 (Secrets + 로컬 대응)
 def update_from_mail(csv_path):
     SCOPES = ['https://www.googleapis.com/auth/gmail.readonly']
-    TOKEN_PATH = r"c:/Users/pkill/Desktop/recruit_crawler-master/recruit_crawler-master/token.json"
-    creds = Credentials.from_authorized_user_file(TOKEN_PATH, SCOPES)
+    token_env = os.getenv("GOOGLE_TOKEN_JSON")
+    if token_env:
+        print("✅ Using Gmail token from GitHub Secret")
+        creds = Credentials.from_authorized_user_info(json.loads(token_env), SCOPES)
+    else:
+        TOKEN_PATH = r"c:/Users/pkill/Desktop/recruit_crawler-master/recruit_crawler-master/token.json"
+        print("⚠️ GOOGLE_TOKEN_JSON not found, using local file:", TOKEN_PATH)
+        creds = Credentials.from_authorized_user_file(TOKEN_PATH, SCOPES)
+
     service = build('gmail', 'v1', credentials=creds)
     query = '(subject:"입사지원 완료" OR subject:"지원이 완료되었습니다" OR subject:"성공적으로 완료되었습니다")'
     results = service.users().messages().list(userId='me', q=query, maxResults=10).execute()
