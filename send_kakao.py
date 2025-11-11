@@ -46,12 +46,12 @@ def load_html_text() -> str:
         r.raise_for_status()
         html = r.text
 
-    # ✅ <style>, <script> 제거 (파싱 방해 방지)
+    # ✅ <style>, <script> 제거
     cleaned = re.sub(r"<style.*?>.*?</style>", "", html, flags=re.DOTALL | re.IGNORECASE)
     cleaned = re.sub(r"<script.*?>.*?</script>", "", cleaned, flags=re.DOTALL | re.IGNORECASE)
     return cleaned
 
-# ===== 마감일 파싱 =====
+# ===== 마감일 관련 =====
 def parse_deadline(text: str):
     if not text:
         return None
@@ -89,20 +89,57 @@ def format_deadline_display(deadline_dt, raw_text: str) -> str:
         return f"마감 {mmdd}"
     return t or ""
 
-# ===== 공고 추출 =====
+# ===== 공고 추출 (카드 + 테이블 둘 다 지원) =====
 def extract_items():
     html = load_html_text()
     soup = BeautifulSoup(html, "lxml")
 
+    # ✅ 1. 카드형 구조 탐색
+    cards = soup.select("div.card")
+    if cards:
+        items = []
+        for card in cards:
+            title = card.select_one(".title").get_text(strip=True) if card.select_one(".title") else ""
+            company = card.select_one(".company").get_text(strip=True) if card.select_one(".company") else ""
+            meta = card.select_one(".meta").get_text(strip=True) if card.select_one(".meta") else ""
+            score_text = card.select_one(".score").get_text(strip=True) if card.select_one(".score") else ""
+            link_el = card.select_one("a[href]")
+            url = link_el["href"].strip() if link_el else ""
+
+            # 마감일
+            m_dead = re.search(r"마감[일:\s~]*([\d/()D\-+]+)", meta)
+            raw_deadline = m_dead.group(1) if m_dead else ""
+            deadline_dt = parse_deadline(raw_deadline)
+            deadline_disp = format_deadline_display(deadline_dt, raw_deadline)
+
+            # 점수
+            m_score = re.search(r"(\d+)", score_text)
+            score_val = int(m_score.group(1)) if m_score else 0
+
+            # rec_idx
+            m_idx = re.search(r"rec_idx=(\d+)", url)
+            rec_idx = m_idx.group(1) if m_idx else None
+
+            items.append({
+                "title": title,
+                "company": company,
+                "location": meta,
+                "job": "(직무정보없음)",
+                "deadline_text": raw_deadline,
+                "deadline": deadline_dt,
+                "deadline_disp": deadline_disp,
+                "salary": "",
+                "url": url,
+                "rec_idx": rec_idx,
+                "score": score_val,
+            })
+        return items, len(items)
+
+    # ✅ 2. 테이블 백업 로직
     table = soup.find("table")
     if not table:
-        # ✅ 백업 로직: <h2> 이후 <table> 강제 탐색
-        for tag in soup.find_all("table"):
-            table = tag
-            break
-        if not table:
-            print("❌ 테이블을 찾지 못했습니다. HTML 구조를 확인하세요.")
-            return [], 0
+        print("❌ 테이블 또는 카드 구조를 찾지 못했습니다.")
+        return [], 0
 
     headers = [th.get_text(strip=True) for th in table.find_all("th")]
     rows = table.find_all("tr")[1:]
@@ -126,34 +163,22 @@ def extract_items():
     for tr in rows:
         tds = tr.find_all("td")
         if not tds: continue
-
-        title, url, rec_idx = "", "", None
-
-        if i_title is not None and i_title < len(tds):
-            title = tds[i_title].get_text(strip=True)
-
-        if i_link_col is not None and i_link_col < len(tds):
-            a = tds[i_link_col].find("a", href=True)
-            if a:
-                full_url = a["href"].strip()
-                m = re.search(r"rec_idx=(\d+)", full_url)
-                if m:
-                    rec_idx = m.group(1)
-                    url = f"https://www.saramin.co.kr/zf_user/jobs/relay/view?rec_idx={rec_idx}"
-                else:
-                    url = full_url
-
-        company = tds[i_company].get_text(strip=True) if i_company is not None and i_company < len(tds) else ""
-        loc     = tds[i_loc].get_text(strip=True) if i_loc is not None and i_loc < len(tds) else ""
-        job     = tds[i_job].get_text(strip=True) if i_job is not None and i_job < len(tds) else "(직무정보없음)"
-        deadraw = tds[i_dead].get_text(strip=True) if i_dead is not None and i_dead < len(tds) else ""
-        salary  = tds[i_salary].get_text(strip=True) if i_salary is not None and i_salary < len(tds) else ""
+        title = tds[i_title].get_text(strip=True) if i_title is not None else ""
+        company = tds[i_company].get_text(strip=True) if i_company is not None else ""
+        loc = tds[i_loc].get_text(strip=True) if i_loc is not None else ""
+        job = tds[i_job].get_text(strip=True) if i_job is not None else "(직무정보없음)"
+        deadraw = tds[i_dead].get_text(strip=True) if i_dead is not None else ""
+        salary = tds[i_salary].get_text(strip=True) if i_salary is not None else ""
+        link_el = tds[i_link_col].find("a", href=True) if i_link_col is not None else None
+        url = link_el["href"] if link_el else ""
+        m = re.search(r"rec_idx=(\d+)", url)
+        rec_idx = m.group(1) if m else None
 
         deadline_dt = parse_deadline(deadraw)
         deadline_disp = format_deadline_display(deadline_dt, deadraw)
 
         items.append({
-            "title": title or "(제목 없음)",
+            "title": title,
             "company": company,
             "location": loc,
             "job": job,
@@ -161,7 +186,7 @@ def extract_items():
             "deadline": deadline_dt,
             "deadline_disp": deadline_disp,
             "salary": salary,
-            "url": url or PAGES_URL,
+            "url": url,
             "rec_idx": rec_idx
         })
     return items, total
@@ -220,7 +245,8 @@ def score_item(item, last_ids: set):
 def rank_top(items, k=5):
     last_ids = load_last_rec_ids()
     for it in items:
-        it["score"] = score_item(it, last_ids)
+        if "score" not in it or not it["score"]:
+            it["score"] = score_item(it, last_ids)
     items.sort(key=lambda x: x["score"], reverse=True)
     topk = items[:k]
     save_current_rec_ids(items)
@@ -274,7 +300,7 @@ def main():
     lines.append(f"총 {total}개 중 선별된 상위 공고입니다.\n")
 
     for i, it in enumerate(top5, start=1):
-        title_line = f"{i}위 ({it['score']}점) | {it['company']} / {it['job']} | {it['location']} | {it['deadline_disp']}"
+        title_line = f"{i}위 ({it['score']}점) | {it['company']} | {it['location']} | {it['deadline_disp']}"
         lines.append(title_line)
         real_link = it.get('url') or f"https://www.saramin.co.kr/zf_user/jobs/relay/view?rec_idx={it.get('rec_idx','')}"
         lines.append(f"🔗 {real_link}\n")
