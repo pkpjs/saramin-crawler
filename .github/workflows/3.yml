@@ -15,6 +15,8 @@ jobs:
       EMAIL_SENDER: ${{ secrets.EMAIL_SENDER }}
       EMAIL_RECEIVER: ${{ secrets.EMAIL_RECEIVER }}
       EMAIL_APP_PASSWORD: ${{ secrets.EMAIL_APP_PASSWORD }}
+      GOOGLE_TOKEN_JSON: ${{ secrets.GOOGLE_TOKEN_JSON }}
+
 
     steps:
       - name: Checkout repository
