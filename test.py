@@ -28,17 +28,22 @@ def score_job(j):
                 d = (dd - datetime.now()).days
                 if d <= 3: score += DEADLINE_IMMINENT_3D
                 elif d <= 7: score += DEADLINE_IMMINENT_7D
-        except: pass
+        except:
+            pass
     else:
         score += DEADLINE_NONE
+
     name = j.get("company", "")
     if any(k in name for k in BIG_FIRM_HINTS): score += FIRM_BIG
     elif any(k in name for k in MID_FIRM_HINTS): score += FIRM_MID
+
     try:
         t = datetime.strptime(j.get("crawled_at", ""), "%Y-%m-%d %H:%M:%S")
         if (datetime.now() - t).days <= 1: score += FRESH_NEW
         else: score += FRESH_OLD
-    except: pass
+    except:
+        pass
+
     salary = j.get("salary", "")
     if salary and "협의" not in salary:
         nums = [int(x) for x in re.findall(r'\d{3,4}', salary)]
@@ -79,7 +84,8 @@ class SaraminCrawler:
             try:
                 rec_idx = (item.get("value") or "").strip()
                 a = item.select_one("h2.job_tit a")
-                if not a: continue
+                if not a:
+                    continue
                 title = a.get_text(strip=True)
                 href = a.get("href", "")
                 link = "https://www.saramin.co.kr" + href if href.startswith("/") else href
@@ -97,16 +103,17 @@ class SaraminCrawler:
                     "deadline": deadline, "link": link, "salary": "",
                     "crawled_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
                 })
-            except: continue
+            except:
+                continue
         return jobs
 
     def _fetch(self, page):
         p = dict(self.params)
-        p["recruitPage"]=page
+        p["recruitPage"] = page
         r = requests.get(self.api_url, params=p, headers=self.headers)
         data = r.json()
-        html = data.get("innerHTML","")
-        cnt = int(str(data.get("count","0")).replace(",","") or 0)
+        html = data.get("innerHTML", "")
+        cnt = int(str(data.get("count", "0")).replace(",", "") or 0)
         return self._parse_page(html), cnt
 
     def crawl_all(self):
@@ -124,7 +131,7 @@ class SaraminCrawler:
         if df.empty: return df
         df.drop_duplicates(subset=["rec_idx"], inplace=True)
         df["score"] = df.apply(score_job, axis=1)
-        df = df.sort_values("score",ascending=False).reset_index(drop=True)
+        df = df.sort_values("score", ascending=False).reset_index(drop=True)
         return df
 
     # ✅ 지원완료 컬럼 포함 HTML 생성
@@ -163,15 +170,17 @@ class SaraminCrawler:
         print(f"✅ HTML 생성 완료 → {path}")
 
 
-# ✅ Gmail에서 지원완료 반영 (Secrets + 로컬 대응)
+# ✅ Gmail에서 지원완료 반영 (GitHub Secret 기반)
 def update_from_mail(csv_path):
     SCOPES = ['https://www.googleapis.com/auth/gmail.readonly']
     token_env = os.getenv("GOOGLE_TOKEN_JSON")
-    if token_env:
-        print("✅ Using Gmail token from GitHub Secret")
-        creds = Credentials.from_authorized_user_info(json.loads(token_env), SCOPES)
+    if not token_env:
+        raise RuntimeError("❌ GOOGLE_TOKEN_JSON 환경변수가 없습니다. GitHub Secrets에 추가했는지 확인하세요.")
+    print("✅ Using Gmail token from GitHub Secret")
 
+    creds = Credentials.from_authorized_user_info(json.loads(token_env), SCOPES)
     service = build('gmail', 'v1', credentials=creds)
+
     query = '(subject:"입사지원 완료" OR subject:"지원이 완료되었습니다" OR subject:"성공적으로 완료되었습니다")'
     results = service.users().messages().list(userId='me', q=query, maxResults=10).execute()
     messages = results.get('messages', [])
@@ -187,7 +196,8 @@ def update_from_mail(csv_path):
         msg = service.users().messages().get(userId='me', id=m['id']).execute()
         subject = next((h['value'] for h in msg['payload']['headers'] if h['name'] == 'Subject'), "")
         match = re.search(r"\[사람인\]\s*(.+?)에\s*입사지원이\s*(?:성공적으로\s*)?완료", subject)
-        if not match: continue
+        if not match:
+            continue
         company = match.group(1).strip()
         print(f"📨 지원완료 메일 감지: {company}")
         mask = df["company"].str.contains(company, na=False)
@@ -201,7 +211,8 @@ def update_from_mail(csv_path):
 
 def clean_old_csv():
     files = sorted(Path(".").glob("saramin_results_*.csv"), key=lambda x: x.stat().st_mtime, reverse=True)
-    for f in files[1:]: os.remove(f)
+    for f in files[1:]:
+        os.remove(f)
 
 
 # ================= MAIN ==================
@@ -213,7 +224,7 @@ if __name__ == "__main__":
 
     ts = datetime.now().strftime('%Y%m%d_%H%M%S')
     csv_path = f"saramin_results_{ts}.csv"
-    df.to_csv(csv_path,index=False,encoding="utf-8-sig")
+    df.to_csv(csv_path, index=False, encoding="utf-8-sig")
     print(f"✅ CSV 저장: {csv_path}")
     clean_old_csv()
 
@@ -246,7 +257,9 @@ if __name__ == "__main__":
         <a href="{j['link']}">🔗 공고 보기</a>
         </div>"""
     msg.attach(MIMEText(html, 'html', 'utf-8'))
-    s = smtplib.SMTP('smtp.gmail.com', 587); s.starttls()
+    s = smtplib.SMTP('smtp.gmail.com', 587)
+    s.starttls()
     s.login(EMAIL_SENDER, EMAIL_APP_PASSWORD)
-    s.send_message(msg); s.quit()
+    s.send_message(msg)
+    s.quit()
     print("📧 이메일 전송 완료!")
