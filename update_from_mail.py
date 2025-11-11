@@ -13,7 +13,7 @@ def check_and_update_csv(csv_path):
 
     results = service.users().messages().list(
         userId='me',
-        q='subject:(입사지원 완료) OR subject:(지원이 완료되었습니다)'
+        q='subject:(입사지원) OR subject:(지원이 완료되었습니다)'
     ).execute()
     messages = results.get('messages', [])
 
