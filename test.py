@@ -170,10 +170,6 @@ def update_from_mail(csv_path):
     if token_env:
         print("✅ Using Gmail token from GitHub Secret")
         creds = Credentials.from_authorized_user_info(json.loads(token_env), SCOPES)
-    else:
-        TOKEN_PATH = r"c:/Users/pkill/Desktop/recruit_crawler-master/recruit_crawler-master/token.json"
-        print("⚠️ GOOGLE_TOKEN_JSON not found, using local file:", TOKEN_PATH)
-        creds = Credentials.from_authorized_user_file(TOKEN_PATH, SCOPES)
 
     service = build('gmail', 'v1', credentials=creds)
     query = '(subject:"입사지원 완료" OR subject:"지원이 완료되었습니다" OR subject:"성공적으로 완료되었습니다")'
