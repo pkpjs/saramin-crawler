@@ -71,4 +71,4 @@ def check_and_update_csv(csv_path):
 
 
 if __name__ == "__main__":
-    check_and_update_csv("saramin_results_20251110_000000.csv")  # 또는 최신 CSV 경로로 수정
+    check_and_update_csv("saramin_results_*_.csv")  # 또는 최신 CSV 경로로 수정
