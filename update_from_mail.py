@@ -1,4 +1,4 @@
-# update_from_mail.py
+# update_from_mail_debug.py
 import re, csv
 from datetime import datetime
 from google.oauth2.credentials import Credentials
@@ -11,19 +11,29 @@ def check_and_update_csv(csv_path):
     creds = Credentials.from_authorized_user_file(TOKEN_PATH, SCOPES)
     service = build('gmail', 'v1', credentials=creds)
 
+    # Gmail 검색 쿼리
+    query = '(subject:"입사지원 완료" OR subject:"지원이 완료되었습니다" OR subject:"성공적으로 완료되었습니다")'
     results = service.users().messages().list(
         userId='me',
-        q='subject:(입사지원) OR subject:(지원이 완료되었습니다)'
+        q=query,
+        maxResults=10
     ).execute()
-    messages = results.get('messages', [])
 
+    messages = results.get('messages', [])
     if not messages:
         print("📭 새 지원완료 메일 없음.")
         return
 
+    # 최근 5개 제목 출력 (디버그용)
+    print("📋 최근 메일 제목:")
+    for m in messages[:5]:
+        msg = service.users().messages().get(userId='me', id=m['id']).execute()
+        subject = next((h['value'] for h in msg['payload']['headers'] if h['name'] == 'Subject'), "")
+        print("   →", subject)
+
+    # CSV 로드
     rows = []
     updated = False
-
     with open(csv_path, newline='', encoding='utf-8') as f:
         reader = csv.DictReader(f)
         fieldnames = reader.fieldnames
@@ -31,13 +41,13 @@ def check_and_update_csv(csv_path):
             fieldnames += ["status", "applied_at"]
         rows = list(reader)
 
+    # 정규식 패턴 강화
     for m in messages:
         msg = service.users().messages().get(userId='me', id=m['id']).execute()
-        subject = ""
-        for h in msg['payload']['headers']:
-            if h['name'] == 'Subject':
-                subject = h['value']
-        match = re.search(r"\[사람인\]\s*(.+?)에\s*입사지원", subject)
+        subject = next((h['value'] for h in msg['payload']['headers'] if h['name'] == 'Subject'), "")
+        
+        # 예시: [사람인] (주)애니아이티에 입사지원이 성공적으로 완료되었습니다.
+        match = re.search(r"\[사람인\]\s*(.+?)에\s*입사지원이\s*(?:성공적으로\s*)?완료", subject)
         if not match:
             continue
         company = match.group(1).strip()
@@ -49,6 +59,7 @@ def check_and_update_csv(csv_path):
                 row["applied_at"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
                 updated = True
 
+    # 저장
     if updated:
         with open(csv_path, 'w', newline='', encoding='utf-8') as f:
             writer = csv.DictWriter(f, fieldnames=rows[0].keys())
@@ -57,3 +68,7 @@ def check_and_update_csv(csv_path):
         print("✅ CSV 상태 업데이트 완료")
     else:
         print("⚠️ 일치하는 회사 없음")
+
+
+if __name__ == "__main__":
+    check_and_update_csv("saramin_results_20251110_000000.csv")  # 또는 최신 CSV 경로로 수정
