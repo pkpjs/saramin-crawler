@@ -24,26 +24,27 @@ def score_job(j):
         try:
             m = re.search(r"(\d{2})/(\d{2})", deadline)
             if m:
-                dd = datetime(datetime.now().year, int(m.group(1)), int(m.group(2)))
+                # 현재 년도로 설정하며, 마감일이 현재 날짜보다 과거면 내년으로 간주
+                year = datetime.now().year
+                month, day = int(m.group(1)), int(m.group(2))
+                dd = datetime(year, month, day)
+                if dd < datetime.now():
+                    dd = datetime(year + 1, month, day)
+                
                 d = (dd - datetime.now()).days
                 if d <= 3: score += DEADLINE_IMMINENT_3D
                 elif d <= 7: score += DEADLINE_IMMINENT_7D
-        except:
-            pass
+        except: pass
     else:
         score += DEADLINE_NONE
-
     name = j.get("company", "")
     if any(k in name for k in BIG_FIRM_HINTS): score += FIRM_BIG
     elif any(k in name for k in MID_FIRM_HINTS): score += FIRM_MID
-
     try:
         t = datetime.strptime(j.get("crawled_at", ""), "%Y-%m-%d %H:%M:%S")
         if (datetime.now() - t).days <= 1: score += FRESH_NEW
         else: score += FRESH_OLD
-    except:
-        pass
-
+    except: pass
     salary = j.get("salary", "")
     if salary and "협의" not in salary:
         nums = [int(x) for x in re.findall(r'\d{3,4}', salary)]
@@ -84,8 +85,7 @@ class SaraminCrawler:
             try:
                 rec_idx = (item.get("value") or "").strip()
                 a = item.select_one("h2.job_tit a")
-                if not a:
-                    continue
+                if not a: continue
                 title = a.get_text(strip=True)
                 href = a.get("href", "")
                 link = "https://www.saramin.co.kr" + href if href.startswith("/") else href
@@ -103,17 +103,16 @@ class SaraminCrawler:
                     "deadline": deadline, "link": link, "salary": "",
                     "crawled_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
                 })
-            except:
-                continue
+            except: continue
         return jobs
 
     def _fetch(self, page):
         p = dict(self.params)
-        p["recruitPage"] = page
+        p["recruitPage"]=page
         r = requests.get(self.api_url, params=p, headers=self.headers)
         data = r.json()
-        html = data.get("innerHTML", "")
-        cnt = int(str(data.get("count", "0")).replace(",", "") or 0)
+        html = data.get("innerHTML","")
+        cnt = int(str(data.get("count","0")).replace(",","") or 0)
         return self._parse_page(html), cnt
 
     def crawl_all(self):
@@ -131,7 +130,7 @@ class SaraminCrawler:
         if df.empty: return df
         df.drop_duplicates(subset=["rec_idx"], inplace=True)
         df["score"] = df.apply(score_job, axis=1)
-        df = df.sort_values("score", ascending=False).reset_index(drop=True)
+        df = df.sort_values("score",ascending=False).reset_index(drop=True)
         return df
 
     # ✅ 지원완료 컬럼 포함 HTML 생성
@@ -170,49 +169,74 @@ class SaraminCrawler:
         print(f"✅ HTML 생성 완료 → {path}")
 
 
-# ✅ Gmail에서 지원완료 반영 (GitHub Secret 기반)
+# ✅ Gmail에서 지원완료 반영 (Secrets 기반으로 수정)
 def update_from_mail(csv_path):
     SCOPES = ['https://www.googleapis.com/auth/gmail.readonly']
     token_env = os.getenv("GOOGLE_TOKEN_JSON")
+    
+    # GOOGLE_TOKEN_JSON 환경 변수가 없으면 Gmail 업데이트 기능을 건너뜁니다.
     if not token_env:
-        raise RuntimeError("❌ GOOGLE_TOKEN_JSON 환경변수가 없습니다. GitHub Secrets에 추가했는지 확인하세요.")
-    print("✅ Using Gmail token from GitHub Secret")
-
-    creds = Credentials.from_authorized_user_info(json.loads(token_env), SCOPES)
-    service = build('gmail', 'v1', credentials=creds)
-
-    query = '(subject:"입사지원 완료" OR subject:"지원이 완료되었습니다" OR subject:"성공적으로 완료되었습니다")'
-    results = service.users().messages().list(userId='me', q=query, maxResults=10).execute()
-    messages = results.get('messages', [])
-    if not messages:
-        print("📭 새 지원완료 메일 없음.")
+        print("❌ GOOGLE_TOKEN_JSON 환경 변수 없음. Gmail 업데이트 건너뜀.")
+        return pd.read_csv(csv_path)
+    
+    try:
+        print("✅ GitHub Secret 환경 변수에서 Gmail 토큰 사용...")
+        # 환경 변수에서 JSON 문자열을 로드하여 자격 증명 생성
+        creds = Credentials.from_authorized_user_info(json.loads(token_env), SCOPES)
+    except Exception as e:
+        print(f"❌ Gmail 토큰 로드 중 오류 발생: {e}. Gmail 업데이트 건너
         return pd.read_csv(csv_path)
 
-    df = pd.read_csv(csv_path, encoding='utf-8')
-    if "status" not in df.columns: df["status"] = ""
-    if "applied_at" not in df.columns: df["applied_at"] = ""
+    try:
+        service = build('gmail', 'v1', credentials=creds)
+        query = '(subject:"입사지원 완료" OR subject:"지원이 완료되었습니다" OR subject:"성공적으로 완료되었습니다")'
+        # 최신 10개의 지원 완료 메일만 확인
+        results = service.users().messages().list(userId='me', q=query, maxResults=10).execute()
+        messages = results.get('messages', [])
+        
+        df = pd.read_csv(csv_path, encoding='utf-8')
+        if "status" not in df.columns: df["status"] = ""
+        if "applied_at" not in df.columns: df["applied_at"] = ""
+        
+        if not messages:
+            print("📭 새 지원완료 메일 없음.")
+            return df
 
-    for m in messages:
-        msg = service.users().messages().get(userId='me', id=m['id']).execute()
-        subject = next((h['value'] for h in msg['payload']['headers'] if h['name'] == 'Subject'), "")
-        match = re.search(r"\[사람인\]\s*(.+?)에\s*입사지원이\s*(?:성공적으로\s*)?완료", subject)
-        if not match:
-            continue
-        company = match.group(1).strip()
-        print(f"📨 지원완료 메일 감지: {company}")
-        mask = df["company"].str.contains(company, na=False)
-        df.loc[mask, "status"] = "applied"
-        df.loc[mask, "applied_at"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        for m in messages:
+            # 메일 상세 정보 가져오기
+            msg = service.users().messages().get(userId='me', id=m['id']).execute()
+            subject = next((h['value'] for h in msg['payload']['headers'] if h['name'] == 'Subject'), "")
+            # '[사람인] 회사명에 입사지원이 완료' 등의 패턴 매칭
+            match = re.search(r"\[사람인\]\s*(.+?)에\s*입사지원이\s*(?:성공적으로\s*)?완료", subject)
+            
+            if not match: continue
+            
+            company = match.group(1).strip()
+            print(f"📨 지원완료 메일 감지: {company}")
+            
+            # 회사 이름이 포함된 모든 행의 상태 업데이트
+            mask = df["company"].str.contains(company, na=False, regex=False)
+            df.loc[mask, "status"] = "applied"
+            df.loc[mask, "applied_at"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
-    df.to_csv(csv_path, index=False, encoding='utf-8-sig')
-    print("✅ CSV 상태 업데이트 완료")
-    return df
+        df.to_csv(csv_path, index=False, encoding='utf-8-sig')
+        print("✅ CSV 상태 업데이트 완료")
+        return df
+
+    except Exception as e:
+        print(f"❌ Gmail API 통신 중 오류 발생: {e}. 기존 CSV 파일을 반환합니다.")
+        return pd.read_csv(csv_path)
 
 
 def clean_old_csv():
+    # 현재 디렉토리에서 'saramin_results_*.csv' 파일을 찾고, 가장 최신 파일을 제외한 나머지를 삭제합니다.
     files = sorted(Path(".").glob("saramin_results_*.csv"), key=lambda x: x.stat().st_mtime, reverse=True)
-    for f in files[1:]:
-        os.remove(f)
+    for f in files[1:]: 
+        try:
+            os.remove(f)
+            # print(f"🗑️ 오래된 파일 삭제: {f}")
+        except Exception as e:
+            print(f"❌ 파일 삭제 오류: {f} - {e}")
 
 
 # ================= MAIN ==================
@@ -224,11 +248,11 @@ if __name__ == "__main__":
 
     ts = datetime.now().strftime('%Y%m%d_%H%M%S')
     csv_path = f"saramin_results_{ts}.csv"
-    df.to_csv(csv_path, index=False, encoding="utf-8-sig")
+    df.to_csv(csv_path,index=False,encoding="utf-8-sig")
     print(f"✅ CSV 저장: {csv_path}")
     clean_old_csv()
 
-    # ✅ Gmail에서 지원완료 메일 반영
+    # ✅ Gmail에서 지원완료 메일 반영 (로컬 경로 문제 해결됨)
     df = update_from_mail(csv_path)
 
     # ✅ 반영된 데이터로 HTML 생성
@@ -240,26 +264,27 @@ if __name__ == "__main__":
     EMAIL_RECEIVER = os.getenv("EMAIL_RECEIVER")
     EMAIL_APP_PASSWORD = os.getenv("EMAIL_APP_PASSWORD")
     if not all([EMAIL_SENDER, EMAIL_RECEIVER, EMAIL_APP_PASSWORD]):
-        print("❌ 이메일 env 없음"); exit()
+        print("❌ 이메일 환경 변수(SENDER, RECEIVER, PASSWORD)가 설정되지 않음. 이메일 전송 건너뜀."); exit()
 
-    top10 = df.head(10).to_dict(orient="records")
-    msg = MIMEMultipart('alternative')
-    msg['From'], msg['To'] = EMAIL_SENDER, EMAIL_RECEIVER
-    msg['Subject'] = f"🎯 AI 추천 채용공고 - {datetime.now().strftime('%Y-%m-%d')}"
-    html = "<h2>🎯 AI 추천 TOP 10 채용공고</h2>"
-    for j in top10:
-        status_txt = f"<div style='color:green;'>✅ 지원완료 ({j.get('applied_at','')})</div>" if j.get('status')=="applied" else ""
-        html += f"""
-        <div style='border:1px solid #eee;border-radius:8px;padding:10px;margin:8px;'>
-        <b>{j['title']}</b> - {j['company']}<br>
-        {j['location']} · {j['career']} · 마감: {j['deadline']} · 점수: {j['score']}<br>
-        {status_txt}
-        <a href="{j['link']}">🔗 공고 보기</a>
-        </div>"""
-    msg.attach(MIMEText(html, 'html', 'utf-8'))
-    s = smtplib.SMTP('smtp.gmail.com', 587)
-    s.starttls()
-    s.login(EMAIL_SENDER, EMAIL_APP_PASSWORD)
-    s.send_message(msg)
-    s.quit()
-    print("📧 이메일 전송 완료!")
+    try:
+        top10 = df.head(10).to_dict(orient="records")
+        msg = MIMEMultipart('alternative')
+        msg['From'], msg['To'] = EMAIL_SENDER, EMAIL_RECEIVER
+        msg['Subject'] = f"🎯 AI 추천 채용공고 - {datetime.now().strftime('%Y-%m-%d')}"
+        html = "<h2>🎯 AI 추천 TOP 10 채용공고</h2>"
+        for j in top10:
+            status_txt = f"<div style='color:green;'>✅ 지원완료 ({j.get('applied_at','')[:10]})</div>" if j.get('status')=="applied" else ""
+            html += f"""
+            <div style='border:1px solid #eee;border-radius:8px;padding:10px;margin:8px;'>
+            <b>{j['title']}</b> - {j['company']}<br>
+            {j['location']} · {j['career']} · 마감: {j['deadline']} · 점수: {j['score']}<br>
+            {status_txt}
+            <a href="{j['link']}">🔗 공고 보기</a>
+            </div>"""
+        msg.attach(MIMEText(html, 'html', 'utf-8'))
+        s = smtplib.SMTP('smtp.gmail.com', 587); s.starttls()
+        s.login(EMAIL_SENDER, EMAIL_APP_PASSWORD)
+        s.send_message(msg); s.quit()
+        print("📧 이메일 전송 완료!")
+    except Exception as e:
+        print(f"❌ 이메일 전송 중 오류 발생: {e}")
