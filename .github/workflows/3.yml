@@ -1,9 +1,9 @@
-name: Run Saramin Crawler
+name: Run Saramin Crawler + Gmail Update
 
 on:
   workflow_dispatch:
   schedule:
-    - cron: "0 0 * * *"  # 한국시간 오전 9시 자동 실행 (UTC 0시 기준)
+    - cron: "0 0 * * *"  # 매일 오전 9시 (한국시간)
 
 jobs:
   run:
@@ -33,18 +33,12 @@ jobs:
           pip install --upgrade pip
           pip install requests beautifulsoup4 pandas google-auth google-auth-oauthlib google-api-python-client
 
-      - name: Run Saramin Crawler
-        run: python test.py
-
-      # ✅ 추가된 Step — 지원완료 메일 감지 & CSV 업데이트
-      - name: Check Gmail and Update Applied Status
-        env:
-          GOOGLE_TOKEN: ${{ secrets.GOOGLE_TOKEN }}
+      - name: Run Saramin Crawler (with Gmail integration)
         run: |
-          echo "📬 Checking Gmail for '지원 완료' mails..."
-          python update_from_mail.py || echo "⚠️ No mail updates or script skipped"
+          echo "🚀 Starting Saramin crawler with Gmail auto-update..."
+          python test.py
 
-      - name: Remove old CSV files (Keep only today's)
+      - name: Remove old CSV files (keep only today's)
         run: |
           echo "🧹 Removing old CSV files (keep only today's)..."
           find . -maxdepth 1 -type f -name "saramin_results_*.csv" \
@@ -56,7 +50,7 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
 
-          echo "✅ Pulling latest changes with rebase..."
+          echo "🔄 Pulling latest changes with rebase..."
           git pull origin main --rebase || true
 
           git add docs/*.html *.csv || true
