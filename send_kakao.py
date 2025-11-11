@@ -1,7 +1,6 @@
 # -*- coding: utf-8 -*-
 import os, re, json, requests
 from bs4 import BeautifulSoup
-from urllib.parse import urljoin
 from datetime import datetime, timedelta, timezone
 
 # ===== 기본 설정 =====
@@ -10,7 +9,7 @@ REST_API_KEY = os.getenv("KAKAO_REST_API_KEY")
 REFRESH_TOKEN = os.getenv("KAKAO_REFRESH_TOKEN")
 PAGES_URL = os.getenv("PAGES_URL", "https://pkpjs.github.io/test/saramin_results_latest.html")
 HTML_PATH = "docs/saramin_results_latest.html"
-STATE_PATH = "docs/last_rec_ids.json"   # 신규 감지용 저장 파일
+STATE_PATH = "docs/last_rec_ids.json"
 SARAMIN_BASE = "https://www.saramin.co.kr"
 
 # ===== 점수 가중치 =====
@@ -37,16 +36,22 @@ def refresh_access_token() -> str:
         raise RuntimeError(f"토큰 갱신 실패: {js}")
     return js["access_token"]
 
-# ===== HTML 로드 =====
+# ===== HTML 로드 및 정제 =====
 def load_html_text() -> str:
     try:
         with open(HTML_PATH, "r", encoding="utf-8", errors="ignore") as f:
-            return f.read()
+            html = f.read()
     except FileNotFoundError:
-        r = requests.get(PAGES_URL, timeout=20); r.raise_for_status()
-        return r.text
+        r = requests.get(PAGES_URL, timeout=20)
+        r.raise_for_status()
+        html = r.text
 
-# ===== 마감일 파싱/표시 =====
+    # ✅ <style>, <script> 제거 (파싱 방해 방지)
+    cleaned = re.sub(r"<style.*?>.*?</style>", "", html, flags=re.DOTALL | re.IGNORECASE)
+    cleaned = re.sub(r"<script.*?>.*?</script>", "", cleaned, flags=re.DOTALL | re.IGNORECASE)
+    return cleaned
+
+# ===== 마감일 파싱 =====
 def parse_deadline(text: str):
     if not text:
         return None
@@ -84,13 +89,20 @@ def format_deadline_display(deadline_dt, raw_text: str) -> str:
         return f"마감 {mmdd}"
     return t or ""
 
-# ===== 공고 추출 (⚠️ 단축 URL 로직 적용) =====
+# ===== 공고 추출 =====
 def extract_items():
     html = load_html_text()
     soup = BeautifulSoup(html, "lxml")
+
     table = soup.find("table")
     if not table:
-        return [], 0
+        # ✅ 백업 로직: <h2> 이후 <table> 강제 탐색
+        for tag in soup.find_all("table"):
+            table = tag
+            break
+        if not table:
+            print("❌ 테이블을 찾지 못했습니다. HTML 구조를 확인하세요.")
+            return [], 0
 
     headers = [th.get_text(strip=True) for th in table.find_all("th")]
     rows = table.find_all("tr")[1:]
@@ -102,51 +114,40 @@ def extract_items():
                 return headers.index(n)
         return None
 
-    # 크롤러가 만든 테이블 헤더명에 맞춤
     i_title   = idx("제목")
     i_company = idx("회사","company")
     i_loc     = idx("위치","location")
     i_job     = idx("직무","job")
     i_dead    = idx("마감일","마감","deadline")
     i_salary  = idx("연봉","급여","salary")
-    i_link_col = idx("링크") # '링크' 컬럼 인덱스
+    i_link_col = idx("링크")
 
     items = []
     for tr in rows:
         tds = tr.find_all("td")
         if not tds: continue
 
-        title, url = "", ""
-        rec_idx = None
-        
-        # 1. 제목 추출
+        title, url, rec_idx = "", "", None
+
         if i_title is not None and i_title < len(tds):
             title = tds[i_title].get_text(strip=True)
 
-        # 2. ✅ 링크 추출 및 단축 URL 생성
         if i_link_col is not None and i_link_col < len(tds):
             a = tds[i_link_col].find("a", href=True)
             if a:
                 full_url = a["href"].strip()
-
-                # rec_idx 추출하여 단축 URL로 재구성
                 m = re.search(r"rec_idx=(\d+)", full_url)
                 if m:
                     rec_idx = m.group(1)
-                    # ✅ 단축 URL로 대체
                     url = f"https://www.saramin.co.kr/zf_user/jobs/relay/view?rec_idx={rec_idx}"
                 else:
-                    # rec_idx가 없으면 전체 URL 사용 (혹시 모를 경우 대비)
                     url = full_url
-        
-        # 나머지 데이터 추출
-        company = tds[i_company].get_text(strip=True) if i_company is not None and i_company < len(tds) else ""
-        loc     = tds[i_loc].get_text(strip=True)      if i_loc     is not None and i_loc     < len(tds) else ""
-        job = tds[i_job].get_text(strip=True) if i_job is not None and i_job < len(tds) else "(직무정보없음)"
-        deadraw = tds[i_dead].get_text(strip=True)     if i_dead    is not None and i_dead    < len(tds) else ""
-        salary  = tds[i_salary].get_text(strip=True)   if i_salary  is not None and i_salary < len(tds) else ""
 
-        # rec_idx는 위에서 이미 파싱했으므로, 여기서는 불필요한 재파싱 로직 제거
+        company = tds[i_company].get_text(strip=True) if i_company is not None and i_company < len(tds) else ""
+        loc     = tds[i_loc].get_text(strip=True) if i_loc is not None and i_loc < len(tds) else ""
+        job     = tds[i_job].get_text(strip=True) if i_job is not None and i_job < len(tds) else "(직무정보없음)"
+        deadraw = tds[i_dead].get_text(strip=True) if i_dead is not None and i_dead < len(tds) else ""
+        salary  = tds[i_salary].get_text(strip=True) if i_salary is not None and i_salary < len(tds) else ""
 
         deadline_dt = parse_deadline(deadraw)
         deadline_disp = format_deadline_display(deadline_dt, deadraw)
@@ -160,12 +161,12 @@ def extract_items():
             "deadline": deadline_dt,
             "deadline_disp": deadline_disp,
             "salary": salary,
-            "url": url or PAGES_URL,  # 단축 URL 또는 PAGES_URL이 저장됨
+            "url": url or PAGES_URL,
             "rec_idx": rec_idx
         })
     return items, total
 
-# ===== 신규/과거 rec_idx 관리 =====
+# ===== rec_idx 관리 =====
 def load_last_rec_ids():
     try:
         with open(STATE_PATH, "r", encoding="utf-8") as f:
@@ -182,7 +183,7 @@ def save_current_rec_ids(items):
     except Exception:
         pass
 
-# ===== 점수 계산 (변경 없음) =====
+# ===== 점수 계산 =====
 def deadline_score(deadline):
     d = days_to_deadline(deadline)
     if d is None: return DEADLINE_NONE
@@ -225,7 +226,7 @@ def rank_top(items, k=5):
     save_current_rec_ids(items)
     return topk
 
-# ===== 카카오 전송 (⚠️ 메시지 청크 길이 900 -> 1000으로 늘림) =====
+# ===== 카카오톡 전송 =====
 def send_text(access_token: str, text: str):
     url = "https://kapi.kakao.com/v2/api/talk/memo/default/send"
     headers = {"Authorization": f"Bearer {access_token}"}
@@ -234,7 +235,6 @@ def send_text(access_token: str, text: str):
     cur_len = 0
     for line in text.splitlines():
         add = len(line) + 1
-        # ✅ 청크 길이를 1000으로 늘림
         if cur_len + add > 1000:
             chunks.append("\n".join(buf))
             buf, cur_len = [], 0
@@ -258,7 +258,7 @@ def send_text(access_token: str, text: str):
         except Exception:
             print("전송 결과:", r.text)
 
-# ===== 메인 (변경 없음) =====
+# ===== 메인 =====
 def main():
     access_token = refresh_access_token()
     items_all, total = extract_items()
@@ -276,16 +276,10 @@ def main():
     for i, it in enumerate(top5, start=1):
         title_line = f"{i}위 ({it['score']}점) | {it['company']} / {it['job']} | {it['location']} | {it['deadline_disp']}"
         lines.append(title_line)
-
-        # 단축 URL이 it['url']에 이미 저장되어 있습니다.
-        real_link = it.get('url')
-        if not real_link and it.get('rec_idx'):
-            # 혹시 모를 경우를 대비한 최종 안전장치 (이젠 거의 발생하지 않을 것)
-            real_link = f"https://www.saramin.co.kr/zf_user/jobs/relay/view?rec_idx={it['rec_idx']}"
+        real_link = it.get('url') or f"https://www.saramin.co.kr/zf_user/jobs/relay/view?rec_idx={it.get('rec_idx','')}"
         lines.append(f"🔗 {real_link}\n")
 
     lines.append(f"👇 전체 공고 보기:\n{PAGES_URL}")
-
     final_message = "\n".join(lines)
     send_text(access_token, final_message)
     print(f"✅ 전송 완료: {len(top5)}개 항목")
