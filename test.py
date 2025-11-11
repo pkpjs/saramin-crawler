@@ -184,7 +184,8 @@ def update_from_mail(csv_path):
         # 환경 변수에서 JSON 문자열을 로드하여 자격 증명 생성
         creds = Credentials.from_authorized_user_info(json.loads(token_env), SCOPES)
     except Exception as e:
-        print(f"❌ Gmail 토큰 로드 중 오류 발생: {e}. Gmail 업데이트 건너
+        # 구문 오류 수정된 부분
+        print(f"❌ Gmail 토큰 로드 중 오류 발생: {e}. Gmail 업데이트 건너뜀.") 
         return pd.read_csv(csv_path)
 
     try:
@@ -252,7 +253,7 @@ if __name__ == "__main__":
     print(f"✅ CSV 저장: {csv_path}")
     clean_old_csv()
 
-    # ✅ Gmail에서 지원완료 메일 반영 (로컬 경로 문제 해결됨)
+    # ✅ Gmail에서 지원완료 메일 반영 
     df = update_from_mail(csv_path)
 
     # ✅ 반영된 데이터로 HTML 생성
